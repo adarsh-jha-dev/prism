@@ -1,0 +1,153 @@
+---
+config:
+  layout: elk
+---
+erDiagram
+  TENANTS ||--o{ API_KEYS : "manages"
+  TENANTS ||--o{ COLLECTIONS : "owns"
+  TENANTS ||--o{ QUERIES : "initiates"
+  TENANTS ||--o{ EVAL_RUNS : "triggers"
+  TENANTS ||--o{ ROBUSTNESS_RUNS : "triggers"
+
+  API_KEYS ||--o{ API_KEY_COLLECTIONS : "scopes_to"
+  API_KEYS ||--o{ QUERIES : "authenticates"
+
+  COLLECTIONS ||--o{ API_KEY_COLLECTIONS : "filtered_by"
+  COLLECTIONS ||--o{ DOCUMENTS : "contains"
+  COLLECTIONS ||--o{ QUERIES : "searches"
+  COLLECTIONS ||--o{ CACHE_ENTRIES : "caches_for"
+
+  DOCUMENTS ||--o{ CHUNKS : "splits_into"
+
+  CHUNKS ||--o{ QUERY_CITATIONS : "cited_by"
+
+  QUERIES ||--o{ QUERY_TRACES : "logs"
+  QUERIES ||--o{ QUERY_CITATIONS : "cites"
+
+  QUERY_TRACES ||--|| QUERIES : "traces"
+
+  CACHE_ENTRIES ||--o{ QUERIES : "serves"
+
+  EVAL_RUNS ||--o{ EVAL_RESULTS : "contains"
+  EVAL_RESULTS ||--|| EVAL_RUNS : "belongs_to"
+
+  ROBUSTNESS_RUNS ||--|| TENANTS : "measures"
+
+  TENANTS {
+    string id PK
+    string name
+    timestamp created_at
+  }
+
+  API_KEYS {
+    string id PK
+    string tenant_id FK
+    string key_hash
+    string name
+    int rate_limit_rpm
+    timestamp created_at
+    timestamp revoked_at "nullable"
+  }
+
+  COLLECTIONS {
+    string id PK
+    string tenant_id FK
+    string name
+    float abstention_threshold
+    timestamp created_at
+  }
+
+  API_KEY_COLLECTIONS {
+    string id PK
+    string api_key_id FK
+    string collection_id FK
+  }
+
+  DOCUMENTS {
+    string id PK
+    string collection_id FK
+    string filename
+    string mime_type
+    string status
+    timestamp ingested_at
+  }
+
+  CHUNKS {
+    string id PK
+    string document_id FK
+    text content
+    string chunk_type "text|figure|table|equation"
+    int page_number
+    vector embedding "768-dim"
+    jsonb metadata
+  }
+
+  QUERIES {
+    string id PK
+    string tenant_id FK
+    string collection_id FK
+    string api_key_id FK
+    text question
+    text final_answer
+    boolean was_refused
+    decimal total_cost_usd
+    int total_latency_ms
+    int retry_count
+    timestamp created_at
+  }
+
+  QUERY_TRACES {
+    string id PK
+    string query_id FK
+    string node_name
+    int sequence
+    string provider
+    string model
+    string verdict "pass|fail|skip"
+    int input_tokens
+    int output_tokens
+    decimal cost_usd
+    int latency_ms
+    string checkpoint_ref "nullable"
+  }
+
+  QUERY_CITATIONS {
+    string id PK
+    string query_id FK
+    string chunk_id FK
+    float relevance_score
+  }
+
+  CACHE_ENTRIES {
+    string id PK
+    vector query_embedding "768-dim"
+    text answer
+    int hit_count
+    timestamp created_at
+  }
+
+  EVAL_RUNS {
+    string id PK
+    string commit_sha
+    float accuracy
+    float groundedness
+    float refusal_rate
+    timestamp run_at
+  }
+
+  EVAL_RESULTS {
+    string id PK
+    string eval_run_id FK
+    string golden_question_id
+    boolean passed
+    string provider
+  }
+
+  ROBUSTNESS_RUNS {
+    string id PK
+    string commit_sha
+    string attack_category
+    int attempts
+    int successes
+    boolean mitigations_enabled
+  }

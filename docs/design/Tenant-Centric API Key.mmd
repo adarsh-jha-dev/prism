@@ -1,0 +1,174 @@
+---
+config:
+  layout: elk
+---
+erDiagram
+  TENANTS ||--o{ API_KEYS : has
+  TENANTS ||--o{ COLLECTIONS : owns
+  TENANTS ||--o{ QUERIES : submits
+  TENANTS ||--o{ EVAL_RUNS : triggers
+  TENANTS ||--o{ ROBUSTNESS_RUNS : triggers
+
+  API_KEYS }o--|| TENANTS : "belongs to"
+  API_KEYS ||--o{ API_KEY_COLLECTIONS : scopes
+  API_KEYS ||--o{ QUERIES : authenticates
+
+  COLLECTIONS ||--o{ DOCUMENTS : contains
+  COLLECTIONS ||--o{ QUERIES : targets
+  COLLECTIONS }o--o{ API_KEYS : "scoped via"
+
+  API_KEY_COLLECTIONS }o--|| API_KEYS : references
+  API_KEY_COLLECTIONS }o--|| COLLECTIONS : references
+
+  DOCUMENTS ||--o{ CHUNKS : comprises
+  DOCUMENTS }o--|| COLLECTIONS : "belongs to"
+
+  CHUNKS }o--|| DOCUMENTS : "part of"
+  CHUNKS ||--o{ QUERY_CITATIONS : cited_in
+
+  QUERIES ||--o{ QUERY_TRACES : traces
+  QUERIES ||--o{ QUERY_CITATIONS : cites
+  QUERIES }o--|| TENANTS : "submitted by"
+  QUERIES }o--|| COLLECTIONS : "queries"
+  QUERIES }o--|| API_KEYS : "authenticated by"
+
+  QUERY_TRACES }o--|| QUERIES : "records execution of"
+  QUERY_CITATIONS }o--|| QUERIES : "belongs to"
+  QUERY_CITATIONS }o--|| CHUNKS : "references"
+
+  CACHE_ENTRIES }o--o{ QUERIES : "memoizes"
+
+  EVAL_RUNS ||--o{ EVAL_RESULTS : contains
+  EVAL_RUNS }o--|| TENANTS : "owned by"
+
+  EVAL_RESULTS }o--|| EVAL_RUNS : "belongs to"
+  EVAL_RESULTS }o--o{ GOLDEN_QUESTIONS : evaluates
+
+  ROBUSTNESS_RUNS }o--|| TENANTS : "owned by"
+
+  TENANTS {
+    bigint id PK
+    string name
+    timestamp created_at
+  }
+
+  API_KEYS {
+    bigint id PK
+    bigint tenant_id FK
+    string key_hash
+    string name
+    integer rate_limit_rpm
+    timestamp created_at
+    timestamp revoked_at
+  }
+
+  COLLECTIONS {
+    bigint id PK
+    bigint tenant_id FK
+    string name
+    float abstention_threshold
+    timestamp created_at
+  }
+
+  API_KEY_COLLECTIONS {
+    bigint id PK
+    bigint api_key_id FK
+    bigint collection_id FK
+  }
+
+  DOCUMENTS {
+    bigint id PK
+    bigint collection_id FK
+    string filename
+    string mime_type
+    string status
+    timestamp ingested_at
+  }
+
+  CHUNKS {
+    bigint id PK
+    bigint document_id FK
+    text content
+    string chunk_type
+    integer page_number
+    vector embedding
+    jsonb metadata
+  }
+
+  QUERIES {
+    bigint id PK
+    bigint tenant_id FK
+    bigint collection_id FK
+    bigint api_key_id FK
+    text question
+    text final_answer
+    boolean was_refused
+    decimal total_cost_usd
+    integer total_latency_ms
+    integer retry_count
+    timestamp created_at
+  }
+
+  QUERY_TRACES {
+    bigint id PK
+    bigint query_id FK
+    string node_name
+    integer sequence
+    string provider
+    string model
+    string verdict
+    integer input_tokens
+    integer output_tokens
+    decimal cost_usd
+    integer latency_ms
+    string checkpoint_ref
+  }
+
+  QUERY_CITATIONS {
+    bigint id PK
+    bigint query_id FK
+    bigint chunk_id FK
+    float relevance_score
+  }
+
+  CACHE_ENTRIES {
+    bigint id PK
+    vector query_embedding
+    text answer
+    integer hit_count
+    timestamp created_at
+  }
+
+  EVAL_RUNS {
+    bigint id PK
+    bigint tenant_id FK
+    string commit_sha
+    float accuracy
+    float groundedness
+    float refusal_rate
+    timestamp run_at
+  }
+
+  EVAL_RESULTS {
+    bigint id PK
+    bigint eval_run_id FK
+    bigint golden_question_id FK
+    boolean passed
+    string provider
+  }
+
+  GOLDEN_QUESTIONS {
+    bigint id PK
+    string question
+    text expected_answer
+  }
+
+  ROBUSTNESS_RUNS {
+    bigint id PK
+    bigint tenant_id FK
+    string commit_sha
+    string attack_category
+    integer attempts
+    integer successes
+    boolean mitigations_enabled
+  }
