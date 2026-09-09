@@ -12,6 +12,10 @@ class Settings(BaseSettings):
         env_file=(".env", "../../.env"),
         env_file_encoding="utf-8",
         extra="ignore",
+        # .env.example ships every key with an empty value. Without this, `KEY=`
+        # parses as "" — a hard error on every numeric field, and a silent empty
+        # string on every text one.
+        env_ignore_empty=True,
     )
 
     prism_env: Literal["development", "test", "production"] = "development"
@@ -24,6 +28,9 @@ class Settings(BaseSettings):
     embedding_model: str = "nomic-embed-text"
     embedding_dim: int = 768
     dep_check_timeout_s: float = 2.0
+    # Generous next to the query budget: a cold model load is a one-off, and a
+    # slow embed must surface as an error, never as a missing vector.
+    embed_timeout_s: float = 30.0
 
     planner_model: str = "qwen2.5:14b"  # plan_query, rewrite_query
     grader_model: str = "llama3.1:8b"  # grade_docs, verify_grounding
