@@ -4,7 +4,7 @@ API_DIR := services/api
 WEB_DIR := apps/web
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs api web install test test-all lint fmt migrate revision
+.PHONY: help up down logs api web install test test-all test-ci lint fmt migrate revision
 
 help: ## List targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -35,8 +35,11 @@ web: ## Run the Next.js dev server
 test: ## Unit tests — no network, no database, no paid call
 	cd $(API_DIR) && uv run pytest -m "not integration"
 
-test-all: ## Unit + integration tests (needs `make up`)
+test-all: ## Unit + integration tests (needs `make up` and a local Ollama)
 	cd $(API_DIR) && uv run pytest
+
+test-ci: ## Exactly what CI runs — no live model
+	cd $(API_DIR) && uv run pytest -m "not ollama"
 
 lint: ## ruff + mypy + tsc
 	cd $(API_DIR) && uv run ruff check . && uv run ruff format --check . && uv run mypy

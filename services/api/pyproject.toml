@@ -53,4 +53,5 @@ asyncio_mode = "auto"
 addopts = "-q --strict-markers"
 markers = [
     "integration: requires docker compose services (deselect with -m 'not integration')",
+    "ollama: additionally requires a local Ollama with the embedding model pulled",
 ]

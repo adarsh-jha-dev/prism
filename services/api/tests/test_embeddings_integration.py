@@ -1,7 +1,9 @@
-"""Integration: needs `make up` and a local Ollama carrying nomic-embed-text.
+"""Integration: needs `make up`.
 
-Free and self-hosted — no paid call, but it is network and a model, so it
-stays out of `make test`.
+Tests marked `ollama` additionally need a local Ollama carrying
+nomic-embed-text. That is free and self-hosted — the no-paid-call rule is not
+what excludes it from CI; CI simply has no Ollama, so those are deselected
+there and the semantic assertions are a local-only signal.
 """
 
 import json
@@ -78,6 +80,7 @@ async def collection() -> AsyncIterator[tuple[UUID, UUID]]:
             await conn.execute(text("DELETE FROM tenants WHERE id = :id"), {"id": tenant_id})
 
 
+@pytest.mark.ollama
 async def test_similar_sentences_outrank_dissimilar_ones(
     provider: OllamaEmbeddingProvider,
 ) -> None:
@@ -98,17 +101,20 @@ async def test_similar_sentences_outrank_dissimilar_ones(
     assert near_finance - across > MIN_SEPARATION, f"{near_finance=} {across=}"
 
 
+@pytest.mark.ollama
 async def test_a_sentence_is_closest_to_itself(provider: OllamaEmbeddingProvider) -> None:
     once, twice = await provider.embed([CAT, CAT])
     assert cosine(once, twice) == pytest.approx(1.0, abs=1e-6)
 
 
+@pytest.mark.ollama
 async def test_vectors_are_unit_norm(provider: OllamaEmbeddingProvider) -> None:
     """The HNSW index is built with vector_cosine_ops on this assumption."""
     for vector in await provider.embed([CAT, FINANCE]):
         assert math.sqrt(sum(x * x for x in vector)) == pytest.approx(1.0, abs=1e-5)
 
 
+@pytest.mark.ollama
 async def test_embedding_round_trips_through_pgvector(
     provider: OllamaEmbeddingProvider,
     collection: tuple[UUID, UUID],
@@ -148,6 +154,7 @@ async def test_embedding_round_trips_through_pgvector(
     assert cosine(read_back, written) == pytest.approx(1.0, abs=1e-9)
 
 
+@pytest.mark.ollama
 async def test_nearest_neighbour_finds_the_semantic_match(
     provider: OllamaEmbeddingProvider,
     collection: tuple[UUID, UUID],

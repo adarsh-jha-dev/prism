@@ -65,9 +65,10 @@ jobs:
       - name: Migrate
         run: uv run alembic upgrade head
 
-      # No Ollama here, so /health/deps reports it down. Nothing asserts otherwise.
+      # No Ollama here, so /health/deps reports it down. Nothing asserts otherwise,
+      # and tests needing a live model are deselected — see the `ollama` marker.
       - name: Test
-        run: uv run pytest
+        run: uv run pytest -m "not ollama"
 
   web:
     name: web — types, build
