@@ -1,0 +1,112 @@
+---
+config:
+  layout: elk
+---
+flowchart TB
+    subgraph CLIENT["CLIENT"]
+        Dashboard["Next.js Dashboard"]
+        ExtAPI["External API Consumers"]
+    end
+
+    subgraph EDGE["EDGE"]
+        Gateway["API Gateway"]
+        Auth["Per-Key Auth"]
+        RateLimit["Rate Limiting"]
+        Quota["Quota Enforcement"]
+    end
+
+    subgraph QUEUE["QUEUE"]
+        RedisQueue["Redis-Backed Job Queue"]
+        QueueDepth["Queue Depth Signal"]
+    end
+
+    subgraph WORKERS["WORKERS"]
+        Executors["Horizontally-Scaled LangGraph Executors<br/>Stateless · spot interruption resumes"]
+        SelectionPolicy{"LangGraph Selection Policy<br/>Grader FAIL or per-query cost/latency budget"}
+        IngestPath["Document Ingestion Path<br/>Figures · tables · equations"]
+    end
+
+    subgraph INFERENCE["INFERENCE"]
+        ProviderInterface{"Provider Interface<br/>Circuit Breaker"}
+        OllamaPool["Self-Hosted Ollama GPU Pool"]
+        OllamaCloud["Ollama Cloud"]
+        Gemini["Gemini"]
+        OpenAI["OpenAI"]
+    end
+
+    subgraph DATA["DATA"]
+        Postgres[("Postgres + pgvector<br/>Documents · chunks · checkpoints · traces · evals")]
+        RedisCache["Redis Semantic Cache<br/>Scoped per collection"]
+        RedisQueueStore[("Redis<br/>Queue backing store")]
+        RedisNote["One Redis instance · separate keyspaces"]
+    end
+
+    subgraph EXTERNAL["EXTERNAL"]
+        WebSearch["Web Search MCP Server"]
+    end
+
+    subgraph OBSERVABILITY["OBSERVABILITY"]
+        MetricsCollector["Metrics Collector"]
+        AutoscalingPolicy["Autoscaling Policy<br/>Queue depth, not CPU"]
+        CostDashboard["Cost / Latency Dashboard"]
+    end
+
+    Dashboard -->|"sync"| Gateway
+    ExtAPI -->|"sync"| Gateway
+    Gateway --> Auth --> RateLimit --> Quota
+    Quota -->|"async: enqueue"| RedisQueue
+    RedisQueue -->|"async: dequeue"| Executors
+    RedisQueue --- RedisQueueStore
+    RedisCache --- RedisNote --- RedisQueueStore
+
+    Executors -->|"sync: retrieval / generation"| SelectionPolicy
+    SelectionPolicy -->|"sync: provider selection"| ProviderInterface
+
+    ProviderInterface ==>|"default · graders, rewrite, embeddings, most generation"| OllamaPool
+    ProviderInterface -.->|"escalation · hard cap 1 concurrent · GPU-time metered"| OllamaCloud
+    ProviderInterface -.->|"escalation · multimodal"| Gemini
+    ProviderInterface -.->|"final escalation · budget permitting"| OpenAI
+    IngestPath -->|"sync: multimodal ingestion"| Gemini
+
+    Executors -->|"sync: cache lookup / write"| RedisCache
+    Executors -->|"sync: document and vector retrieval"| Postgres
+    Executors -.->|"async: checkpoint + trace write"| Postgres
+    Executors -->|"async: search query"| WebSearch
+
+    Executors -->|"SSE stream: answer + citations"| Dashboard
+    Executors -->|"SSE stream: answer + citations"| ExtAPI
+
+    RedisQueue --> QueueDepth
+    QueueDepth -.-> MetricsCollector
+    Executors -.-> MetricsCollector
+    ProviderInterface -.-> MetricsCollector
+    OllamaPool -.-> MetricsCollector
+    OllamaCloud -.-> MetricsCollector
+    Gemini -.-> MetricsCollector
+    OpenAI -.-> MetricsCollector
+    Postgres -.-> MetricsCollector
+    MetricsCollector --> AutoscalingPolicy
+    MetricsCollector --> CostDashboard
+    AutoscalingPolicy -.->|"scale workers by queue depth"| Executors
+
+    classDef clientNode stroke:#818cf8,fill:#eef2ff
+    classDef edgeNode stroke:#f87171,fill:#fef2f2
+    classDef queueNode stroke:#facc15,fill:#fefce8
+    classDef workerNode stroke:#4ade80,fill:#f0fdf4
+    classDef inferenceNode stroke:#a78bfa,fill:#f5f3ff
+    classDef defaultPath stroke:#4ade80,fill:#f0fdf4,stroke-width:3px
+    classDef escalationPath stroke:#f87171,fill:#fef2f2
+    classDef dataNode stroke:#2dd4bf,fill:#f0fdfa
+    classDef externalNode stroke:#38bdf8,fill:#f0f9ff
+    classDef observNode stroke:#fb923c,fill:#fff7ed
+
+    class Dashboard,ExtAPI clientNode
+    class Gateway,Auth,RateLimit,Quota edgeNode
+    class RedisQueue,QueueDepth,RedisQueueStore queueNode
+    class Executors,SelectionPolicy,IngestPath workerNode
+    class ProviderInterface inferenceNode
+    class OllamaPool defaultPath
+    class OllamaCloud,Gemini,OpenAI escalationPath
+    class Postgres,RedisCache,RedisNote dataNode
+    class WebSearch externalNode
+    class MetricsCollector,AutoscalingPolicy,CostDashboard observNode
