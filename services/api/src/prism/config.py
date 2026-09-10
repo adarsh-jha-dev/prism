@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # slow embed must surface as an error, never as a missing vector.
     embed_timeout_s: float = 30.0
 
+    # Characters, not tokens — chunking is deterministic and tokenizer-free.
+    # Pages are chunked independently, so these bound a single page's windows.
+    chunk_size_chars: int = 1200
+    chunk_overlap_chars: int = 150
+    embed_batch_size: int = 64
+
     planner_model: str = "qwen2.5:14b"  # plan_query, rewrite_query
     grader_model: str = "llama3.1:8b"  # grade_docs, verify_grounding
     generator_model: str = "qwen2.5:32b"  # generate, before escalation
