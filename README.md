@@ -8,11 +8,6 @@ on p95 latency and cost-per-query under concurrent load. The interesting
 engineering is the correction loop, cost-aware provider routing, caching,
 tracing and eval discipline.
 
-> **Status: Phase 0.** This commit proves the *environment* works, not that any
-> AI does. There is no graph, no retrieval, no provider routing and no auth yet.
-> What runs is: Postgres with pgvector, Redis, a FastAPI service with two health
-> endpoints, and a Next.js page that renders their status.
-
 ## Ports
 
 Postgres and Redis sit off their default ports so Prism never collides with

@@ -15,6 +15,7 @@ dependencies = [
     "redis>=5.2",
     "httpx>=0.28",
     "structlog>=24.4",
+    "pypdf>=6.0",
 ]
 
 [dependency-groups]
