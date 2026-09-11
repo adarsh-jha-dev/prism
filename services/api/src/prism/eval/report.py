@@ -93,14 +93,18 @@ def render_text(report: Report) -> str:
         )
     lines.append("")
 
+    largest_k = max(report.ks)
     lines.append("Retrieval — relevance judged per (document, page)")
-    lines.append("   k   recall@k    hit@k      MRR   ceiling")
+    lines.append("   k   recall@k    hit@k   ceiling")
     for summary in report.answerable:
         lines.append(
             f"  {summary.k:>2}    {_pct(summary.recall)}   {_pct(summary.hit_rate)}   "
-            f"{summary.mrr:6.3f}    {_pct(summary.ceiling)}"
+            f"{_pct(summary.ceiling)}"
         )
     lines.append("")
+    # Reported once, not per row: rank of the first relevant chunk does not
+    # depend on k, so a per-k column would repeat one number and read as a bug.
+    lines.append(f"  MRR@{largest_k} {report.answerable[-1].mrr:.3f}")
     lines.append("  recall@k counts every relevant page found; hit@k counts finding any one.")
     lines.append("  ceiling is the best recall@k reachable — a question with more relevant")
     lines.append("  pages than k cannot reach 1.0 however good the ranking.")
@@ -191,11 +195,12 @@ def render_json(report: Report) -> str:
                 "k": s.k,
                 "recall_at_k": s.recall,
                 "hit_at_k": s.hit_rate,
-                "mrr": s.mrr,
                 "ceiling": s.ceiling,
             }
             for s in report.answerable
         ],
+        # Independent of k: the rank of the first relevant chunk in the full list.
+        "mrr": report.answerable[-1].mrr,
         "refusal_calibration": {
             "questions": report.unanswerable.questions,
             "threshold": report.unanswerable.threshold,

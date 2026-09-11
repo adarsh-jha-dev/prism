@@ -1,13 +1,19 @@
-# The golden set: 25-30 question/answer pairs, hand-written from the corpus.
+# The golden set: 30 question/answer pairs, hand-written from the corpus.
 #
 # Relevance is recorded as (document, page), never as a chunk id. Chunk ids are
 # UUIDv7 minted at ingest, so they change on every re-ingest and whenever
 # `chunk_size_chars` changes; a set keyed on them decays into measuring nothing.
 #
-# Every question carries `unanswerable` explicitly. The unanswerable ones score
-# no recall — they exist because correct refusal is this project's primary
-# correctness criterion, and their top-1 similarity is what tells you whether
-# tau (0.58) can separate "found evidence" from "found something".
+# Pages are PDF page indices, 1-based — the same number `extract_pages` records
+# as `chunks.page_number`. For these papers that is not always the number
+# printed on the page.
+#
+# Every question carries `unanswerable` explicitly. The six unanswerable ones
+# score no recall; they exist because correct refusal is this project's primary
+# correctness criterion, and their top-1 similarity is what says whether tau
+# (0.58) can separate "found evidence" from "found something". They are written
+# as hard negatives — in-domain, plausible, and genuinely absent from all seven
+# papers — so retrieval will return something confident for each.
 #
 # FIELDS
 #   id                required  stable, referenced by reports; never reuse one
@@ -20,17 +26,6 @@
 #
 # An unanswerable question must NOT carry expected_answer or relevant. The
 # loader rejects the file rather than silently scoring a contradiction.
-#
-# WRITING GOOD QUESTIONS
-#   - Ask what the paper actually answers, in the words a user would use — not
-#     the paper's own sentence with a question mark on it. Copying the sentence
-#     measures string overlap, not retrieval.
-#   - Prefer questions whose answer lives on one or two pages. A question whose
-#     evidence is spread over eight pages cannot score well at k=5 and tells you
-#     about the question, not the retriever.
-#   - For unanswerable ones, stay plausible and in-domain. "What is the capital
-#     of France" is not a test. "What was the training cost in 2024 dollars" —
-#     asked of a paper that never says — is.
 
 version: 1
 
@@ -38,24 +33,415 @@ version: 1
 collection: prism-eval
 
 questions:
-  # PLACEHOLDER — replace with the real set. Two shapes, for reference.
+  # ---------------------------------------------------------------- Transformer
   - id: gq-001
-    question: What problem does multi-head attention solve that single-head attention does not?
+    question: Why does scaled dot-product attention divide the dot products by the square root of the key dimension?
     unanswerable: false
     expected_answer: >-
-      Averaging over a single attention head collapses the different
-      relationships a token has with the rest of the sequence into one weighted
-      sum. Multiple heads let the model attend to information from different
-      representation subspaces at different positions at once.
+      For large key dimensions the dot products grow large in magnitude, which
+      pushes the softmax into regions with extremely small gradients. Scaling by
+      1/sqrt(d_k) counteracts that.
     relevant:
       - doc: attention-is-all-you-need.pdf
-        pages: [4, 5]
+        pages: [4]
+    supporting_quote: >-
+      pushing the softmax function into regions where it has
+      extremely small gradients
+    tags: [architecture, attention]
+
+  - id: gq-002
+    question: What does using several attention heads give the model that a single head cannot?
+    unanswerable: false
+    expected_answer: >-
+      Multiple heads let the model attend jointly to information from different
+      representation subspaces at different positions. With one head, averaging
+      collapses that and inhibits it.
+    relevant:
+      - doc: attention-is-all-you-need.pdf
+        pages: [5]
     supporting_quote: >-
       Multi-head attention allows the model to jointly attend to information
       from different representation subspaces at different positions.
-    tags: [architecture]
+    tags: [architecture, attention]
+
+  - id: gq-003
+    question: Why did the Transformer authors keep sinusoidal position encodings when learned embeddings scored the same?
+    unanswerable: false
+    expected_answer: >-
+      The two performed nearly identically, but sinusoids were chosen because
+      they may let the model extrapolate to sequence lengths longer than any
+      seen during training.
+    relevant:
+      - doc: attention-is-all-you-need.pdf
+        pages: [6]
+    supporting_quote: >-
+      We chose the sinusoidal version because it may allow the model to
+      extrapolate to sequence lengths longer than the ones encountered
+      during training.
+    tags: [architecture, positional-encoding]
+
+  # ------------------------------------------------------------------------ DPR
+  - id: gq-004
+    question: How many training examples does a dense retriever need before it beats BM25?
+    unanswerable: false
+    expected_answer: >-
+      About 1,000. A DPR model trained on only 1,000 question-passage examples
+      already outperforms BM25 on Natural Questions, and accuracy keeps
+      improving up to the full 59k.
+    relevant:
+      - doc: dense-passage-retrieval.pdf
+        pages: [6]
+    supporting_quote: >-
+      This suggests
+      that with a general pretrained language model, it is
+      possible to train a high-quality dense retriever with
+      a small number of question
+    tags: [retrieval, training, sample-efficiency]
+
+  - id: gq-005
+    question: What is the trade-off between dense and sparse retrieval in index build time?
+    unanswerable: false
+    expected_answer: >-
+      Dense retrieval is far faster to query but much more expensive to index.
+      Building the FAISS index over 21M vectors takes about 8.5 hours on one
+      server (plus ~8.8 GPU-hours to embed), while a Lucene inverted index takes
+      about 30 minutes.
+    relevant:
+      - doc: dense-passage-retrieval.pdf
+        pages: [7]
+    supporting_quote: >-
+      building the FAISS index on 21-million vectors
+      on a single server takes 8.5 hours
+    tags: [retrieval, indexing, cost]
+
+  - id: gq-006
+    question: What kinds of negative passages were compared when training the dense retriever?
+    unanswerable: false
+    expected_answer: >-
+      Three: random passages from the corpus, top BM25 passages that match the
+      question but do not contain the answer, and gold passages paired with
+      other questions. The best model used in-batch gold negatives plus one
+      BM25 negative.
+    relevant:
+      - doc: dense-passage-retrieval.pdf
+        pages: [3]
+    supporting_quote: >-
+      We consider
+      three different types of negatives: (1) Random: any
+      random passage from the corpus
+    tags: [retrieval, training, negatives]
+
+  - id: gq-007
+    question: How were Wikipedia articles split into retrieval units, and how many resulted?
+    unanswerable: false
+    expected_answer: >-
+      Each article was split into disjoint blocks of 100 words, each prepended
+      with the article title, giving 21,015,324 passages from the December 2018
+      dump.
+    relevant:
+      - doc: dense-passage-retrieval.pdf
+        pages: [4]
+    supporting_quote: >-
+      We then split each article into multiple, disjoint text
+      blocks of 100 words as passages, serving as our
+      basic retrieval units
+    tags: [chunking, corpus]
+
+  # ------------------------------------------------------------------------ RAG
+  - id: gq-008
+    question: What is the difference between the two RAG formulations for marginalising over retrieved documents?
+    unanswerable: false
+    expected_answer: >-
+      RAG-Sequence uses one retrieved document for the whole output sequence and
+      marginalises over documents at the sequence level. RAG-Token can draw a
+      different document for each generated token, so one answer can combine
+      content from several documents.
+    relevant:
+      - doc: rag-knowledge-intensive-nlp.pdf
+        pages: [3]
+    supporting_quote: >-
+      The RAG-Sequence model uses the same retrieved document to generate
+      the complete sequence.
+    tags: [rag, architecture]
+
+  - id: gq-009
+    question: Which parts of the RAG model are updated during fine-tuning and which are frozen?
+    unanswerable: false
+    expected_answer: >-
+      Only the query encoder and the BART generator are fine-tuned. The document
+      encoder and its index are kept fixed, because re-encoding the index
+      periodically during training is expensive and was not needed for strong
+      performance.
+    relevant:
+      - doc: rag-knowledge-intensive-nlp.pdf
+        pages: [4]
+    supporting_quote: >-
+      Updating the document encoder BERTd during training is costly as
+      it requires the document index to be periodically updated
+    tags: [rag, training]
+
+  - id: gq-010
+    question: How did the authors show that a retrieval system's knowledge can be updated without retraining the model?
+    unanswerable: false
+    expected_answer: >-
+      By hot-swapping the non-parametric index. Using a list of 82 world leaders
+      who changed between 2016 and 2018, RAG answered about 70% correctly with
+      the 2016 index on 2016 leaders and 68% with the 2018 index on 2018
+      leaders, while mismatched index/year pairs collapsed to 12% and 4%.
+    relevant:
+      - doc: rag-knowledge-intensive-nlp.pdf
+        pages: [7, 8]
+    supporting_quote: >-
+      An advantage of non-parametric memory models like RAG is that knowledge
+      can be easily updated at test time.
+    tags: [rag, index-maintenance]
+
+  # ------------------------------------------------------------------- Self-RAG
+  - id: gq-011
+    question: What categories of special token does the self-reflective model emit alongside its answer?
+    unanswerable: false
+    expected_answer: >-
+      Four reflection tokens: Retrieve (whether to retrieve), ISREL (whether a
+      passage is relevant), ISSUP (whether the output is supported by the
+      passage), and ISUSE (a 1-5 usefulness rating). The last three are the
+      critique tokens.
+    relevant:
+      - doc: self-rag.pdf
+        pages: [4]
+    tags: [self-rag, architecture]
+
+  - id: gq-012
+    question: Can the frequency of retrieval be tuned at inference time rather than left to the model?
+    unanswerable: false
+    expected_answer: >-
+      Yes. Retrieval is normally decided by predicting the Retrieve token, but a
+      threshold can be set instead: retrieval fires when the normalised
+      probability of Retrieve=Yes exceeds it. The default was 0.2 for most
+      tasks and 0 for ALCE.
+    relevant:
+      - doc: self-rag.pdf
+        pages: [6]
+    supporting_quote: >-
+      Alternatively, our framework allows a threshold to be set.
+    tags: [self-rag, inference, thresholds]
+
+  - id: gq-013
+    question: Why was the critic model distilled in-house instead of calling GPT-4 during training?
+    unanswerable: false
+    expected_answer: >-
+      Relying on a proprietary model raises API costs and hurts reproducibility.
+      GPT-4 was prompted to produce reflection tokens once, and that knowledge
+      was distilled into an in-house critic, which then inserts tokens offline
+      so no critic has to be hosted at generator training time.
+    relevant:
+      - doc: self-rag.pdf
+        pages: [4, 5]
+    supporting_quote: >-
+      However, depending on such proprietary LMs
+      can raise API costs and diminish reproducibility
+    tags: [self-rag, training, cost]
+
+  - id: gq-014
+    question: What happens to answer quality if the system always uses the single top-ranked passage?
+    unanswerable: false
+    expected_answer: >-
+      It drops substantially. The "Retrieve top 1" ablation, which uses the top
+      passage regardless of relevance as conventional RAG does, causes a large
+      drop on PopQA and ASQA compared with selecting among passages by the
+      reflection tokens.
+    relevant:
+      - doc: self-rag.pdf
+        pages: [9]
+    supporting_quote: >-
+      as in conventional
+      RAG approaches causes a large drop in PopQA and ASQA
+    tags: [self-rag, ablation, reranking]
+
+  # ----------------------------------------------------------------------- CRAG
+  - id: gq-015
+    question: What actions can a retrieval evaluator trigger after grading the retrieved documents?
+    unanswerable: false
+    expected_answer: >-
+      Three, based on a confidence score: Correct (refine the retrieved
+      documents into knowledge strips), Incorrect (discard them and search the
+      web instead), and Ambiguous (combine both).
+    relevant:
+      - doc: corrective-rag.pdf
+        pages: [3]
+    supporting_quote: >-
+      The relevance score is quantified into a
+      total of three confidence degrees
+    tags: [crag, grading, correction-loop]
+
+  - id: gq-016
+    question: Under what condition is a whole retrieval judged incorrect rather than merely weak?
+    unanswerable: false
+    expected_answer: >-
+      When the confidence scores of every retrieved document fall below the
+      lower threshold. Correct requires at least one document above the upper
+      threshold; anything between the two thresholds is Ambiguous.
+    relevant:
+      - doc: corrective-rag.pdf
+        pages: [5]
+    supporting_quote: >-
+      a retrieval is assumed
+      Incorrect when the confidence scores of all
+      retrieved documents are below the lower threshold.
+    tags: [crag, thresholds, correction-loop]
+
+  - id: gq-017
+    question: How big is the grader model compared to the generator it corrects?
+    unanswerable: false
+    expected_answer: >-
+      Much smaller. The retrieval evaluator is a fine-tuned T5-large at 0.77B
+      parameters, against the instruction-tuned LLaMA-2 7B critic used by
+      Self-RAG, so retrieval quality is assessed without a large expensive LLM.
+    relevant:
+      - doc: corrective-rag.pdf
+        pages: [4]
+    supporting_quote: >-
+      demonstrates the advantages of being quite
+      lightweight (0.77B)
+    tags: [crag, grading, cost]
+
+  - id: gq-018
+    question: What is the point of having a third, intermediate grading outcome instead of just pass and fail?
+    unanswerable: false
+    expected_answer: >-
+      It reduces how much the system depends on the grader being right.
+      Preliminary experiments with only Correct and Incorrect were easily
+      damaged by evaluator errors, because every input caused a hard knowledge
+      switch regardless of confidence.
+    relevant:
+      - doc: corrective-rag.pdf
+        pages: [5, 6]
+    supporting_quote: >-
+      significantly helps to mitigate the dependence on
+      the accuracy of the retrieval evaluator.
+    tags: [crag, grading, robustness]
+
+  # ----------------------------------------------------------------------- HNSW
+  - id: gq-019
+    question: How should the level normalisation factor be chosen when building the graph?
+    unanswerable: false
+    expected_answer: >-
+      Set mL to 1/ln(M). That corresponds to the skip-list parameter p = 1/M and
+      gives an average of one element overlapping between layers, balancing
+      layer overlap against the number of hops per layer.
+    relevant:
+      - doc: hnsw.pdf
+        pages: [5]
+    supporting_quote: A simple choice for the optimal mL is 1/ln(M)
+    tags: [hnsw, parameters]
+
+  - id: gq-020
+    question: What should the maximum number of connections on the ground layer be set to?
+    unanswerable: false
+    expected_answer: >-
+      About 2*M. Setting Mmax0 equal to M causes a strong performance penalty at
+      high recall, and setting it higher than 2*M degrades performance and
+      wastes memory.
+    relevant:
+      - doc: hnsw.pdf
+        pages: [6]
+    supporting_quote: >-
+      setting the parameter higher leads to
+      performance degradation and excessive memory usage
+    tags: [hnsw, parameters]
+
+  - id: gq-021
+    question: What range of values is sensible for the number of links per node, and what does raising it cost?
+    unanswerable: false
+    expected_answer: >-
+      Roughly 5 to 48. Smaller M suits lower recall and lower-dimensional data,
+      larger M suits high recall and high-dimensional data, and memory
+      consumption is proportional to M.
+    relevant:
+      - doc: hnsw.pdf
+        pages: [6]
+    supporting_quote: A reasonable range of M is from 5 to 48.
+    tags: [hnsw, parameters, memory]
+
+  - id: gq-022
+    question: Why pick graph neighbours with a heuristic instead of simply connecting each node to its nearest ones?
+    unanswerable: false
+    expected_answer: >-
+      Connecting only to nearest neighbours loses the edges between separated
+      clusters, so search gets stuck at cluster boundaries and cannot reach high
+      recall on clustered data. The heuristic deliberately keeps a link to a
+      further cluster, preserving global connectivity.
+    relevant:
+      - doc: hnsw.pdf
+        pages: [3, 6]
+    supporting_quote: >-
+      The heuristic, however, selects element e2
+      from Cluster 2, thus, maintaining the global connectivity
+    tags: [hnsw, graph-construction, recall]
+
+  # ------------------------------------------------------- Lost in the Middle
+  - id: gq-023
+    question: Where in a long prompt is retrieved evidence most likely to actually be used?
+    unanswerable: false
+    expected_answer: >-
+      At the very beginning or the very end. Accuracy follows a U-shaped curve
+      across position — primacy and recency bias — and degrades sharply when the
+      relevant document sits in the middle, in the worst case falling below
+      closed-book performance.
+    relevant:
+      - doc: lost-in-the-middle.pdf
+        pages: [5]
+    supporting_quote: >-
+      models are often much
+      better at using relevant information that occurs at
+      the very beginning (primacy bias) and very end of
+      contexts (recency bias)
+    tags: [context, ordering, reranking]
+
+  - id: gq-024
+    question: Does putting the question both before and after the documents fix the position problem?
+    unanswerable: false
+    expected_answer: >-
+      Only for synthetic retrieval. Query-aware contextualisation makes
+      key-value retrieval near-perfect, but it barely changes multi-document QA
+      — slightly better when the evidence is at the very start, slightly worse
+      otherwise.
+    relevant:
+      - doc: lost-in-the-middle.pdf
+        pages: [8]
+    supporting_quote: >-
+      minimally affects performance trends in
+      the multi-document question answering task
+    tags: [context, prompting]
+
+  # ----------------------------------------------------- Unanswerable (6 of 30)
+  # In-domain and plausible, and absent from all seven papers. Each should
+  # retrieve something confident — that is what makes them useful for tau.
+  - id: gq-025
+    question: What is the optimal chunk size in characters for splitting documents before embedding them?
+    unanswerable: true
+    tags: [chunking, unanswerable]
 
   - id: gq-026
-    question: What did the authors measure the model's inference cost to be on consumer hardware?
+    question: What is the dollar cost per query of running the 13B self-reflective model at inference?
     unanswerable: true
-    tags: [cost]
+    tags: [cost, unanswerable]
+
+  - id: gq-027
+    question: How many bytes per vector does an HNSW index consume at M=16 for 768-dimensional embeddings?
+    unanswerable: true
+    tags: [hnsw, memory, unanswerable]
+
+  - id: gq-028
+    question: Which vector database do the HNSW authors recommend for deploying the index in production?
+    unanswerable: true
+    tags: [hnsw, deployment, unanswerable]
+
+  - id: gq-029
+    question: What recall@10 does the dense passage retriever achieve on the MS MARCO passage ranking benchmark?
+    unanswerable: true
+    tags: [retrieval, benchmark, unanswerable]
+
+  - id: gq-030
+    question: How does the lightweight retrieval evaluator perform on non-English queries?
+    unanswerable: true
+    tags: [crag, multilingual, unanswerable]
