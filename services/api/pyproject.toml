@@ -17,6 +17,7 @@ dependencies = [
     "structlog>=24.4",
     "pypdf>=6.0",
     "python-multipart>=0.0.20",
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
@@ -26,6 +27,7 @@ dev = [
     "httpx>=0.28",
     "ruff>=0.8",
     "mypy>=1.13",
+    "types-PyYAML>=6.0",
 ]
 
 [build-system]

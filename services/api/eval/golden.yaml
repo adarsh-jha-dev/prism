@@ -1,0 +1,61 @@
+# The golden set: 25-30 question/answer pairs, hand-written from the corpus.
+#
+# Relevance is recorded as (document, page), never as a chunk id. Chunk ids are
+# UUIDv7 minted at ingest, so they change on every re-ingest and whenever
+# `chunk_size_chars` changes; a set keyed on them decays into measuring nothing.
+#
+# Every question carries `unanswerable` explicitly. The unanswerable ones score
+# no recall — they exist because correct refusal is this project's primary
+# correctness criterion, and their top-1 similarity is what tells you whether
+# tau (0.58) can separate "found evidence" from "found something".
+#
+# FIELDS
+#   id                required  stable, referenced by reports; never reuse one
+#   question          required  asked verbatim
+#   unanswerable      required  true or false, always stated
+#   expected_answer   answerable only — what a correct answer must convey
+#   relevant          answerable only — the pages that support it, 1-based
+#   supporting_quote  optional  verbatim from the paper; checked as a diagnostic
+#   tags              optional  free labels for slicing a report later
+#
+# An unanswerable question must NOT carry expected_answer or relevant. The
+# loader rejects the file rather than silently scoring a contradiction.
+#
+# WRITING GOOD QUESTIONS
+#   - Ask what the paper actually answers, in the words a user would use — not
+#     the paper's own sentence with a question mark on it. Copying the sentence
+#     measures string overlap, not retrieval.
+#   - Prefer questions whose answer lives on one or two pages. A question whose
+#     evidence is spread over eight pages cannot score well at k=5 and tells you
+#     about the question, not the retriever.
+#   - For unanswerable ones, stay plausible and in-domain. "What is the capital
+#     of France" is not a test. "What was the training cost in 2024 dollars" —
+#     asked of a paper that never says — is.
+
+version: 1
+
+# Created by `make eval-ingest` under tenant `eval`.
+collection: prism-eval
+
+questions:
+  # PLACEHOLDER — replace with the real set. Two shapes, for reference.
+  - id: gq-001
+    question: What problem does multi-head attention solve that single-head attention does not?
+    unanswerable: false
+    expected_answer: >-
+      Averaging over a single attention head collapses the different
+      relationships a token has with the rest of the sequence into one weighted
+      sum. Multiple heads let the model attend to information from different
+      representation subspaces at different positions at once.
+    relevant:
+      - doc: attention-is-all-you-need.pdf
+        pages: [4, 5]
+    supporting_quote: >-
+      Multi-head attention allows the model to jointly attend to information
+      from different representation subspaces at different positions.
+    tags: [architecture]
+
+  - id: gq-026
+    question: What did the authors measure the model's inference cost to be on consumer hardware?
+    unanswerable: true
+    tags: [cost]

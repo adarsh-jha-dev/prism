@@ -4,7 +4,8 @@ API_DIR := services/api
 WEB_DIR := apps/web
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs api web install test test-all test-ci lint fmt migrate revision
+.PHONY: help up down logs api web install test test-all test-ci lint fmt migrate revision \
+	eval eval-ingest
 
 help: ## List targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -40,6 +41,12 @@ test-all: ## Unit + integration tests (needs `make up` and a local Ollama)
 
 test-ci: ## Exactly what CI runs — no live model
 	cd $(API_DIR) && uv run pytest -m "not ollama"
+
+eval-ingest: ## Ingest the eval corpus into its collection (needs `make up` + Ollama)
+	cd $(API_DIR) && uv run python -m prism.eval ingest
+
+eval: ## Golden set vs naive retrieval — recall@k (needs `make eval-ingest`)
+	cd $(API_DIR) && uv run python -m prism.eval recall --json eval/runs/latest.json
 
 lint: ## ruff + mypy + tsc
 	cd $(API_DIR) && uv run ruff check . && uv run ruff format --check . && uv run mypy
