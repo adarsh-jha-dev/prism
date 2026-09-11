@@ -1,17 +1,13 @@
 """Unit: the composition itself — no database, no network, no model."""
 
-import io
 from collections.abc import Sequence
 
 import pytest
 
-from pdf_builder import build_pdf
 from prism.config import Settings
-from prism.core.ids import uuid7
 from prism.ingestion.pipeline import (
     IngestionError,
     _embed_all,
-    ingest_document,
     plan_chunks,
 )
 
@@ -119,14 +115,3 @@ async def test_a_single_batch_is_one_call() -> None:
 async def test_non_positive_batch_size_is_rejected() -> None:
     with pytest.raises(IngestionError, match="embed_batch_size must be positive"):
         await _embed_all(["a"], RecordingProvider(), _settings(batch=0))
-
-
-async def test_unsupported_mime_type_is_refused_before_anything_is_written() -> None:
-    """Rejected ahead of the database: no row, no connection, no half-ingest."""
-    with pytest.raises(IngestionError, match="unsupported mime type 'image/png'"):
-        await ingest_document(
-            io.BytesIO(build_pdf([["x"]])),
-            collection_id=uuid7(),
-            filename="x.png",
-            mime_type="image/png",
-        )

@@ -4,6 +4,10 @@ Composition only. Extraction, chunking and embedding are unchanged and still
 tested in isolation; what is new here is the ordering, the transaction
 boundaries, and the failure record.
 
+A `documents` row is created by the uploader, not here: `create_document`
+records a `pending` document, and `ingest_document` claims it and carries it to
+`ready` or `failed`. That split is the queue boundary.
+
 Pages are chunked independently of one another, so a chunk never spans a page
 boundary and `chunks.page_number` is exact rather than approximate. Citations
 are only as trustworthy as that number.
@@ -21,7 +25,7 @@ from uuid import UUID
 
 import structlog
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from prism.config import Settings, get_settings
@@ -31,15 +35,35 @@ from prism.embeddings import EmbeddingProvider, get_embedding_provider
 from prism.ingestion.chunking import chunk_text
 from prism.ingestion.pdf import extract_pages
 
-__all__ = ["PDF_MIME_TYPE", "IngestionError", "IngestionResult", "ingest_document", "plan_chunks"]
+__all__ = [
+    "PDF_MIME_TYPE",
+    "CollectionNotFoundError",
+    "EmbeddingModelMismatchError",
+    "IngestionError",
+    "IngestionResult",
+    "assert_collection_ingestable",
+    "create_document",
+    "ingest_document",
+    "plan_chunks",
+]
 
 log = structlog.get_logger(__name__)
 
 PDF_MIME_TYPE = "application/pdf"
 
 _INSERT_DOCUMENT = text(
-    "INSERT INTO documents (id, collection_id, filename, mime_type, status) "
-    "VALUES (:id, :collection_id, :filename, :mime_type, 'processing')"
+    "INSERT INTO documents "
+    "(id, collection_id, filename, mime_type, status, storage_path, size_bytes, sha256) "
+    "VALUES (:id, :collection_id, :filename, :mime_type, 'pending', "
+    ":storage_path, :size_bytes, :sha256)"
+)
+_SELECT_DOCUMENT = text(
+    "SELECT collection_id, filename, mime_type, status FROM documents WHERE id = :id"
+)
+# Conditional, so the claim is the check: two workers cannot both ingest one
+# document and double its chunks.
+_CLAIM_DOCUMENT = text(
+    "UPDATE documents SET status = 'processing' WHERE id = :id AND status IN ('pending', 'failed')"
 )
 _INSERT_CHUNK = text(
     "INSERT INTO chunks "
@@ -56,9 +80,18 @@ class IngestionError(RuntimeError):
     retrieval cannot tell "not in the corpus" from "dropped on the way in"."""
 
 
+class CollectionNotFoundError(IngestionError):
+    """No such collection. The caller addressed something that does not exist."""
+
+
+class EmbeddingModelMismatchError(IngestionError):
+    """The provider does not produce the vectors this collection was built for."""
+
+
 @dataclass(frozen=True)
 class IngestionResult:
     document_id: UUID
+    collection_id: UUID
     pages: int
     chunks: int
 
@@ -85,45 +118,87 @@ def plan_chunks(pages: list[tuple[int, str]], settings: Settings) -> list[tuple[
     return planned
 
 
+async def assert_collection_ingestable(
+    collection_id: UUID,
+    provider: EmbeddingProvider,
+    *,
+    engine: AsyncEngine | None = None,
+) -> None:
+    """Check a collection can take this provider's vectors, before anything is
+    written. Raises CollectionNotFoundError or EmbeddingModelMismatchError."""
+    async with (engine or get_engine()).connect() as conn:
+        await _assert_collection_matches(conn, collection_id, provider)
+
+
+async def create_document(
+    *,
+    document_id: UUID,
+    collection_id: UUID,
+    filename: str,
+    mime_type: str,
+    storage_path: str | None = None,
+    size_bytes: int | None = None,
+    sha256: str | None = None,
+    engine: AsyncEngine | None = None,
+) -> None:
+    """Record an uploaded document as `pending` — stored, not yet ingested.
+
+    The id is the caller's because the blob is written first and named after it:
+    a crash then leaves an unreferenced file rather than a row whose bytes never
+    arrived.
+    """
+    try:
+        async with (engine or get_engine()).begin() as conn:
+            await conn.execute(
+                _INSERT_DOCUMENT,
+                {
+                    "id": document_id,
+                    "collection_id": collection_id,
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "storage_path": storage_path,
+                    "size_bytes": size_bytes,
+                    "sha256": sha256,
+                },
+            )
+    except IntegrityError as exc:
+        raise CollectionNotFoundError(f"collection {collection_id} does not exist") from exc
+
+
 async def ingest_document(
     source: str | Path | IO[bytes],
     *,
-    collection_id: UUID,
-    filename: str,
-    mime_type: str = PDF_MIME_TYPE,
+    document_id: UUID,
     engine: AsyncEngine | None = None,
     provider: EmbeddingProvider | None = None,
     settings: Settings | None = None,
 ) -> IngestionResult:
-    """Ingest one document into `collection_id`, returning what was written.
+    """Ingest a `pending` document's bytes, returning what was written.
 
-    The `documents` row is created before any work starts and moves
-    `processing` -> `ready`, or `processing` -> `failed` with the error
-    re-raised. Chunks and the `ready` transition share one transaction, so a
-    document is never readable with a partial chunk set.
+    The row moves `pending` -> `processing` -> `ready`, or -> `failed` with the
+    error re-raised. Chunks and the `ready` transition share one transaction, so
+    a document is never readable with a partial chunk set.
     """
-    if mime_type != PDF_MIME_TYPE:
-        raise IngestionError(f"unsupported mime type {mime_type!r}, expected {PDF_MIME_TYPE!r}")
-
     settings = settings or get_settings()
     provider = provider or get_embedding_provider()
     engine = engine or get_engine()
 
-    async with engine.connect() as conn:
-        await _assert_collection_matches(conn, collection_id, provider)
-
-    document_id = uuid7()
     async with engine.begin() as conn:
-        await conn.execute(
-            _INSERT_DOCUMENT,
-            {
-                "id": document_id,
-                "collection_id": collection_id,
-                "filename": filename,
-                "mime_type": mime_type,
-            },
-        )
+        document = (await conn.execute(_SELECT_DOCUMENT, {"id": document_id})).first()
+        if document is None:
+            raise IngestionError(f"document {document_id} does not exist")
+        if document.mime_type != PDF_MIME_TYPE:
+            raise IngestionError(
+                f"unsupported mime type {document.mime_type!r}, expected {PDF_MIME_TYPE!r}"
+            )
+        await _assert_collection_matches(conn, document.collection_id, provider)
+        if (await conn.execute(_CLAIM_DOCUMENT, {"id": document_id})).rowcount != 1:
+            raise IngestionError(
+                f"document {document_id} is {document.status}, not pending — refusing to "
+                "ingest it twice"
+            )
 
+    collection_id: UUID = document.collection_id
     try:
         pages = extract_pages(source)
         planned = plan_chunks(pages, settings)
@@ -154,12 +229,17 @@ async def ingest_document(
             "ingestion_failed",
             document_id=str(document_id),
             collection_id=str(collection_id),
-            filename=filename,
+            filename=document.filename,
             error=f"{type(exc).__name__}: {exc}",
         )
         raise
 
-    return IngestionResult(document_id=document_id, pages=len(pages), chunks=len(planned))
+    return IngestionResult(
+        document_id=document_id,
+        collection_id=collection_id,
+        pages=len(pages),
+        chunks=len(planned),
+    )
 
 
 async def _assert_collection_matches(
@@ -174,11 +254,11 @@ async def _assert_collection_matches(
         )
     ).first()
     if row is None:
-        raise IngestionError(f"collection {collection_id} does not exist")
+        raise CollectionNotFoundError(f"collection {collection_id} does not exist")
 
     model, dim = row
     if (model, dim) != (provider.model, provider.dim):
-        raise IngestionError(
+        raise EmbeddingModelMismatchError(
             f"collection {collection_id} is {model}/{dim}-dim, "
             f"provider is {provider.model}/{provider.dim}-dim"
         )

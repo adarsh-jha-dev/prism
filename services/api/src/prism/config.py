@@ -1,6 +1,7 @@
 """Runtime configuration, loaded from the environment."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -31,6 +32,10 @@ class Settings(BaseSettings):
     # Generous next to the query budget: a cold model load is a one-off, and a
     # slow embed must surface as an error, never as a missing vector.
     embed_timeout_s: float = 30.0
+
+    # Relative paths resolve against the working directory; /app in the container.
+    storage_dir: Path = Path("var/uploads")
+    max_upload_bytes: int = 25 * 1024 * 1024
 
     # Characters, not tokens — chunking is deterministic and tokenizer-free.
     # Pages are chunked independently, so these bound a single page's windows.

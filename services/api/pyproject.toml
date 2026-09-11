@@ -16,6 +16,7 @@ dependencies = [
     "httpx>=0.28",
     "structlog>=24.4",
     "pypdf>=6.0",
+    "python-multipart>=0.0.20",
 ]
 
 [dependency-groups]
@@ -41,6 +42,10 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# A test asserting on what landed on disk is not starving an event loop.
+"tests/*" = ["ASYNC240"]
 
 [tool.mypy]
 python_version = "3.12"
