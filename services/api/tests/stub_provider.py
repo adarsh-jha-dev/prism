@@ -5,6 +5,7 @@ the rows written, the statuses, what survives a failure — not the vectors.
 """
 
 import hashlib
+import math
 from collections.abc import Sequence
 
 from prism.embeddings import EmbeddingError
@@ -36,3 +37,26 @@ class StubProvider:
 
     async def embed_one(self, text: str) -> list[float]:
         return (await self.embed([text]))[0]
+
+
+def graded(similarity: float) -> list[float]:
+    """A unit vector whose cosine similarity with QUERY_VECTOR is exactly this."""
+    vector = [0.0] * DIM
+    vector[0] = similarity
+    vector[1] = math.sqrt(max(0.0, 1.0 - similarity**2))
+    return vector
+
+
+QUERY_VECTOR = graded(1.0)
+
+
+class QueryProvider(StubProvider):
+    """Embeds any query to QUERY_VECTOR, and records what it was asked to embed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.queries: list[str] = []
+
+    async def embed_one(self, text: str) -> list[float]:
+        self.queries.append(text)
+        return QUERY_VECTOR

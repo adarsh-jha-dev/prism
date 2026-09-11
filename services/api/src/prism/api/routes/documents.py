@@ -18,15 +18,17 @@ from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
 from prism.api.deps import ProviderDep, SettingsDep
+from prism.collections import (
+    CollectionNotFoundError,
+    EmbeddingModelMismatchError,
+    assert_collection_compatible,
+)
 from prism.core.ids import uuid7
 from prism.embeddings import EmbeddingError
 from prism.ingestion import (
     PDF_MIME_TYPE,
-    CollectionNotFoundError,
-    EmbeddingModelMismatchError,
     ExtractionError,
     IngestionError,
-    assert_collection_ingestable,
     create_document,
     ingest_document,
 )
@@ -84,7 +86,7 @@ async def upload_document(
 
     # Before the bytes land, so a refusal here leaves neither a blob nor a row.
     try:
-        await assert_collection_ingestable(collection_id, provider)
+        await assert_collection_compatible(collection_id, provider)
     except CollectionNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except EmbeddingModelMismatchError as exc:
@@ -133,6 +135,10 @@ async def upload_document(
         result = await ingest_document(
             blob.path, document_id=document_id, provider=provider, settings=settings
         )
+    except CollectionNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=_failed(document_id, exc)) from exc
+    except EmbeddingModelMismatchError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=_failed(document_id, exc)) from exc
     except (ExtractionError, IngestionError) as exc:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, detail=_failed(document_id, exc)

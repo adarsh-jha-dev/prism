@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     storage_dir: Path = Path("var/uploads")
     max_upload_bytes: int = 25 * 1024 * 1024
 
+    # The HNSW knobs bind only if the planner picks that index over the
+    # collection_id btree; see prism.retrieval.search.
+    retrieval_top_k: int = 10
+    hnsw_ef_search: int = 64
+    hnsw_iterative_scan: Literal["off", "strict_order", "relaxed_order"] = "strict_order"
+
     # Characters, not tokens — chunking is deterministic and tokenizer-free.
     # Pages are chunked independently, so these bound a single page's windows.
     chunk_size_chars: int = 1200

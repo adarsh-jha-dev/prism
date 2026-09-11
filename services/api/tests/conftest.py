@@ -6,6 +6,7 @@ tests/fixtures/.
 
 import os
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from uuid import UUID
 
 import pytest
@@ -31,9 +32,8 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
         yield ac
 
 
-@pytest.fixture
-async def collection_id() -> AsyncIterator[UUID]:
-    """A throwaway tenant and collection. Integration only — needs `make up`."""
+@asynccontextmanager
+async def _throwaway_collection(name: str) -> AsyncIterator[UUID]:
     from sqlalchemy import text
 
     from prism.core.ids import uuid7
@@ -43,14 +43,29 @@ async def collection_id() -> AsyncIterator[UUID]:
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.execute(
-            text("INSERT INTO tenants (id, name) VALUES (:id, 'test')"), {"id": tenant_id}
+            text("INSERT INTO tenants (id, name) VALUES (:id, :name)"),
+            {"id": tenant_id, "name": name},
         )
         await conn.execute(
-            text("INSERT INTO collections (id, tenant_id, name) VALUES (:id, :tenant_id, 'test')"),
-            {"id": collection_id, "tenant_id": tenant_id},
+            text("INSERT INTO collections (id, tenant_id, name) VALUES (:id, :tenant_id, :name)"),
+            {"id": collection_id, "tenant_id": tenant_id, "name": name},
         )
     try:
         yield collection_id
     finally:
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM tenants WHERE id = :id"), {"id": tenant_id})
+
+
+@pytest.fixture
+async def collection_id() -> AsyncIterator[UUID]:
+    """A throwaway tenant and collection. Integration only — needs `make up`."""
+    async with _throwaway_collection("test") as value:
+        yield value
+
+
+@pytest.fixture
+async def other_collection_id() -> AsyncIterator[UUID]:
+    """A second tenant's collection, in the same table and the same index."""
+    async with _throwaway_collection("other") as value:
+        yield value

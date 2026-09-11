@@ -26,8 +26,13 @@ from uuid import UUID
 import structlog
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from prism.collections import (
+    CollectionNotFoundError,
+    EmbeddingModelMismatchError,
+    assert_compatible,
+)
 from prism.config import Settings, get_settings
 from prism.core.ids import uuid7
 from prism.db import get_engine
@@ -41,7 +46,6 @@ __all__ = [
     "EmbeddingModelMismatchError",
     "IngestionError",
     "IngestionResult",
-    "assert_collection_ingestable",
     "create_document",
     "ingest_document",
     "plan_chunks",
@@ -80,14 +84,6 @@ class IngestionError(RuntimeError):
     retrieval cannot tell "not in the corpus" from "dropped on the way in"."""
 
 
-class CollectionNotFoundError(IngestionError):
-    """No such collection. The caller addressed something that does not exist."""
-
-
-class EmbeddingModelMismatchError(IngestionError):
-    """The provider does not produce the vectors this collection was built for."""
-
-
 @dataclass(frozen=True)
 class IngestionResult:
     document_id: UUID
@@ -116,18 +112,6 @@ def plan_chunks(pages: list[tuple[int, str]], settings: Settings) -> list[tuple[
     if not planned:
         raise IngestionError(f"no chunks produced from {len(pages)} page(s)")
     return planned
-
-
-async def assert_collection_ingestable(
-    collection_id: UUID,
-    provider: EmbeddingProvider,
-    *,
-    engine: AsyncEngine | None = None,
-) -> None:
-    """Check a collection can take this provider's vectors, before anything is
-    written. Raises CollectionNotFoundError or EmbeddingModelMismatchError."""
-    async with (engine or get_engine()).connect() as conn:
-        await _assert_collection_matches(conn, collection_id, provider)
 
 
 async def create_document(
@@ -191,7 +175,7 @@ async def ingest_document(
             raise IngestionError(
                 f"unsupported mime type {document.mime_type!r}, expected {PDF_MIME_TYPE!r}"
             )
-        await _assert_collection_matches(conn, document.collection_id, provider)
+        await assert_compatible(conn, document.collection_id, provider)
         if (await conn.execute(_CLAIM_DOCUMENT, {"id": document_id})).rowcount != 1:
             raise IngestionError(
                 f"document {document_id} is {document.status}, not pending — refusing to "
@@ -240,28 +224,6 @@ async def ingest_document(
         pages=len(pages),
         chunks=len(planned),
     )
-
-
-async def _assert_collection_matches(
-    conn: AsyncConnection, collection_id: UUID, provider: EmbeddingProvider
-) -> None:
-    """Refuse to write vectors the collection was not built for: mixing models in
-    one index still returns neighbours, just meaningless ones."""
-    row = (
-        await conn.execute(
-            text("SELECT embedding_model, embedding_dim FROM collections WHERE id = :id"),
-            {"id": collection_id},
-        )
-    ).first()
-    if row is None:
-        raise CollectionNotFoundError(f"collection {collection_id} does not exist")
-
-    model, dim = row
-    if (model, dim) != (provider.model, provider.dim):
-        raise EmbeddingModelMismatchError(
-            f"collection {collection_id} is {model}/{dim}-dim, "
-            f"provider is {provider.model}/{provider.dim}-dim"
-        )
 
 
 async def _embed_all(

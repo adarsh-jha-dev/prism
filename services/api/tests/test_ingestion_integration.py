@@ -13,18 +13,20 @@ import pytest
 from sqlalchemy import text
 
 from pdf_builder import build_pdf
+from prism.collections import (
+    CollectionNotFoundError,
+    EmbeddingModelMismatchError,
+    assert_collection_compatible,
+)
 from prism.config import Settings
 from prism.core.ids import uuid7
 from prism.db import get_engine
 from prism.embeddings import EmbeddingError, EmbeddingProvider, OllamaEmbeddingProvider
 from prism.ingestion import (
     PDF_MIME_TYPE,
-    CollectionNotFoundError,
-    EmbeddingModelMismatchError,
     ExtractionError,
     IngestionError,
     IngestionResult,
-    assert_collection_ingestable,
     create_document,
     ingest_document,
 )
@@ -329,7 +331,7 @@ async def test_a_provider_the_collection_was_not_built_for_is_refused(
         dim = 1024
 
     with pytest.raises(EmbeddingModelMismatchError, match="nomic-embed-text/768-dim"):
-        await assert_collection_ingestable(collection_id, WrongProvider())
+        await assert_collection_compatible(collection_id, WrongProvider())
 
 
 async def test_a_mismatched_provider_leaves_the_document_pending_not_failed(
