@@ -426,11 +426,10 @@ questions:
     unanswerable: true
     tags: [cost, unanswerable]
 
-  - id: gq-027
-    question: How many bytes per vector does an HNSW index consume at M=16 for 768-dimensional embeddings?
-    unanswerable: true
-    tags: [hnsw, memory, unanswerable]
-
+  # gq-027 was retired, not renumbered: it asked for HNSW's per-vector memory
+  # and was filed unanswerable, but hnsw.pdf p8 gives both the formula and a
+  # 60-450 bytes/object range. It is now gq-031, answerable. Ids are never
+  # reused, so the gap stays.
   - id: gq-028
     question: Which vector database do the HNSW authors recommend for deploying the index in production?
     unanswerable: true
@@ -445,3 +444,25 @@ questions:
     question: How does the lightweight retrieval evaluator perform on non-English queries?
     unanswerable: true
     tags: [crag, multilingual, unanswerable]
+
+  - id: gq-032
+    question: What is the recommended way to isolate one customer's documents from another's when a single vector index serves many of them?
+    unanswerable: true
+    tags: [tenancy, unanswerable]
+
+  # --------------------------------------------------- Replaces retired gq-027
+  - id: gq-031
+    question: How much memory does an HNSW index need per stored object, not counting the vectors themselves?
+    unanswerable: false
+    expected_answer: >-
+      Memory is dominated by the graph connections: on average
+      (Mmax0 + mL*Mmax) * bytes_per_link per element, with four-byte integers
+      sufficing below about four billion elements. For typical M between 6 and
+      48 that is roughly 60-450 bytes per object, excluding the data itself.
+    relevant:
+      - doc: hnsw.pdf
+        pages: [8]
+    supporting_quote: >-
+      The memory consumption of the Hierarchical NSW is mostly
+      defined by the storage of graph connections.
+    tags: [hnsw, memory]
