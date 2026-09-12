@@ -5,7 +5,7 @@ WEB_DIR := apps/web
 
 .DEFAULT_GOAL := help
 .PHONY: help up down logs api web install test test-all test-ci lint fmt migrate revision \
-	eval eval-ingest
+	eval eval-ingest record-fixtures
 
 help: ## List targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -41,6 +41,9 @@ test-all: ## Unit + integration tests (needs `make up` and a local Ollama)
 
 test-ci: ## Exactly what CI runs — no live model
 	cd $(API_DIR) && uv run pytest -m "not ollama"
+
+record-fixtures: ## Re-record paid-provider cassettes (local only, needs real keys)
+	cd $(API_DIR) && uv run python ../../scripts/record_fixtures.py $(names)
 
 eval-ingest: ## Ingest the eval corpus into its collection (needs `make up` + Ollama)
 	cd $(API_DIR) && uv run python -m prism.eval ingest

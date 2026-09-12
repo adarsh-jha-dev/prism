@@ -45,8 +45,17 @@ make web                   # Next.js dev server, port 3000
 `make help` lists them all.
 
 **CI never makes a paid call.** There are no API keys in CI, and paid providers
-will be exercised through record/replay fixtures when they land in Phase 3. A
-test that reaches a paid endpoint is a bug.
+are exercised through the record/replay fixtures in
+`services/api/tests/fixtures/` — re-recorded locally with `make record-fixtures`.
+A test that reaches a paid endpoint is a bug.
+
+Ingestion also parses figures and tables with a vision model (`VISION_ENABLED`).
+The default lane is local and free and needs the model pulled:
+
+    ollama pull qwen2.5vl:7b
+
+`VISION_LANE=gemini` is the paid escalation. See ADRs `0004` and `0005` in
+`docs/decisions/`.
 
 ## Layout
 

@@ -18,6 +18,7 @@ dependencies = [
     "pypdf>=6.0",
     "python-multipart>=0.0.20",
     "pyyaml>=6.0",
+    "pypdfium2>=5.13.0",
 ]
 
 [dependency-groups]
@@ -55,11 +56,17 @@ strict = true
 mypy_path = "src"
 packages = ["prism"]
 
+# pypdfium2 ships no py.typed; it is a ctypes binding to pdfium, so there is
+# nothing upstream to wait for. Confined to prism.ingestion.render.
+[[tool.mypy.overrides]]
+module = ["pypdfium2.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
 markers = [
     "integration: requires docker compose services (deselect with -m 'not integration')",
-    "ollama: additionally requires a local Ollama with the embedding model pulled",
+    "ollama: additionally requires a local Ollama with the embedding and vision models pulled",
 ]

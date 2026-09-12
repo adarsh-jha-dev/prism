@@ -49,6 +49,22 @@ class Settings(BaseSettings):
     chunk_overlap_chars: int = 150
     embed_batch_size: int = 64
 
+    vision_enabled: bool = False
+    # Local by default; gemini is the paid escalation and the only lane that
+    # spends money.
+    vision_lane: Literal["ollama", "gemini"] = "ollama"
+    vision_ollama_model: str = "qwen2.5vl:7b"
+    vision_model: str = "gemini-3.6-flash"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    # Ingestion is not subject to the per-query latency budget.
+    vision_timeout_s: float = 90.0
+    # 150dpi keeps 8pt table text legible without tripling the payload.
+    vision_render_dpi: int = 150
+    # Path objects that make a page worth a paid call. The cost/recall knob:
+    # a booktabs table is three or four rules.
+    vision_min_path_objects: int = 6
+    vision_max_pages: int = 20  # per-document ceiling on paid calls
+
     planner_model: str = "qwen2.5:14b"  # plan_query, rewrite_query
     grader_model: str = "llama3.1:8b"  # grade_docs, verify_grounding
     generator_model: str = "qwen2.5:32b"  # generate, before escalation
