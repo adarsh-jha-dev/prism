@@ -18,10 +18,11 @@ from httpx import AsyncClient
 from sqlalchemy import text
 
 from pdf_builder import build_pdf
-from prism.api.deps import embedding_provider
+from prism.api.deps import embedding_provider, vision_provider
 from prism.config import Settings, get_settings
 from prism.db import get_engine
 from stub_provider import DIM, MODEL, StubProvider, vector_for
+from stub_vision import TABLE, StubVision
 
 URL = "/collections/{}/documents"
 
@@ -41,13 +42,19 @@ def configured(
     app: FastAPI, storage_root: Path, provider: StubProvider
 ) -> Iterator[dict[str, object]]:
     """Wire the app to a throwaway storage root and a stub provider."""
-    overrides: dict[str, object] = {"max_upload_bytes": 25 * 1024 * 1024}
+    # Pinned rather than inherited: a developer's .env must not decide whether
+    # these tests reach a vision provider.
+    overrides: dict[str, object] = {
+        "max_upload_bytes": 25 * 1024 * 1024,
+        "vision_enabled": False,
+    }
 
     def settings() -> Settings:
         return Settings(
             storage_dir=storage_root,
             embedding_model=MODEL,
             embedding_dim=DIM,
+            vision_render_dpi=72,
             **overrides,  # type: ignore[arg-type]
         )
 
@@ -326,6 +333,77 @@ async def test_the_response_is_the_documented_shape(
         "status",
         "pages",
         "chunks",
+        "figures",
         "size_bytes",
         "sha256",
     }
+
+
+@pytest.mark.integration
+async def test_a_figure_page_is_reported_in_the_upload_response(
+    client: AsyncClient,
+    app: FastAPI,
+    configured: dict[str, object],
+    collection_id: UUID,
+) -> None:
+    """The count the dashboard shows has to come from what was actually written."""
+    configured["vision_enabled"] = True
+    configured["vision_min_path_objects"] = 6
+    app.dependency_overrides[vision_provider] = lambda: StubVision([TABLE])
+
+    response = await client.post(
+        URL.format(collection_id),
+        files=upload(build_pdf([["Revenue"]], rules={0: 8}), "figures.pdf"),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert (body["chunks"], body["figures"]) == (2, 1)
+
+
+@pytest.mark.integration
+async def test_vision_off_reports_no_figures(
+    client: AsyncClient, configured: dict[str, object], collection_id: UUID
+) -> None:
+    response = await client.post(
+        URL.format(collection_id), files=upload(build_pdf([["Revenue"]], rules={0: 8}))
+    )
+    assert response.json()["figures"] == 0
+
+
+@pytest.mark.integration
+async def test_a_vision_failure_is_503_not_a_document_without_its_figures(
+    client: AsyncClient,
+    app: FastAPI,
+    configured: dict[str, object],
+    collection_id: UUID,
+    storage_root: Path,
+) -> None:
+    """Same classification as an embedding failure: the provider is down, the
+    document is fine, and a retry is the fix."""
+    configured["vision_enabled"] = True
+    configured["vision_min_path_objects"] = 6
+    app.dependency_overrides[vision_provider] = lambda: StubVision([], fail=True)
+
+    response = await client.post(
+        URL.format(collection_id), files=upload(build_pdf([["Revenue"]], rules={0: 8}))
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["status"] == "failed"
+
+    document = await fetch_document(detail["document_id"])
+    assert document is not None
+    assert document["status"] == "failed"
+    # The bytes a retry needs outlive the failure.
+    assert (storage_root / str(document["storage_path"])).exists()
+
+    async with get_engine().connect() as conn:
+        chunks = (
+            await conn.execute(
+                text("SELECT count(*) FROM chunks WHERE document_id = :d"),
+                {"d": detail["document_id"]},
+            )
+        ).scalar_one()
+    assert chunks == 0

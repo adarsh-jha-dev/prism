@@ -72,7 +72,7 @@ grading failure.
 
 | Lane | Concurrency | Role |
 |---|---|---|
-| `ollama` (self-hosted) | 8 | graders, rewrite, embeddings, most generation |
+| `ollama` (self-hosted) | 8 | graders, rewrite, embeddings, vision ingestion, most generation |
 | `ollama-cloud` | **1 — pinned** | GPU-time metered, not tokens |
 | `gemini` | 4 | multimodal ingestion, escalated generation |
 | `openai` | 2 | final escalation, used sparingly |
@@ -87,7 +87,8 @@ timeout, and a `billing_unit` on cost records — tokens cannot express GPU-time
 | `embed_query` | `nomic-embed-text` · 768-dim |
 | `grade_docs`, `verify_grounding` | `llama3.1:8b` · ollama local |
 | `rerank` | `bge-reranker-v2-m3` · in-process |
-| `generate` | `qwen2.5:32b` local → `gemini-2.5-flash` → openai |
+| `generate` | `qwen2.5:32b` local → `gemini-3.6-flash` → openai |
+| vision ingestion (figures, tables) | `qwen2.5vl:7b` local → `gemini-3.6-flash` |
 
 ## Policy constants
 

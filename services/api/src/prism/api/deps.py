@@ -10,8 +10,15 @@ from fastapi import Depends
 
 from prism.config import Settings, get_settings
 from prism.embeddings import EmbeddingProvider, get_embedding_provider
+from prism.vision import VisionProvider, get_vision_provider
 
-__all__ = ["ProviderDep", "SettingsDep", "embedding_provider"]
+__all__ = [
+    "ProviderDep",
+    "SettingsDep",
+    "VisionDep",
+    "embedding_provider",
+    "vision_provider",
+]
 
 
 def embedding_provider() -> EmbeddingProvider:
@@ -19,4 +26,12 @@ def embedding_provider() -> EmbeddingProvider:
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+
+def vision_provider(settings: SettingsDep) -> VisionProvider | None:
+    """None when vision is off."""
+    return get_vision_provider() if settings.vision_enabled else None
+
+
 ProviderDep = Annotated[EmbeddingProvider, Depends(embedding_provider)]
+VisionDep = Annotated[VisionProvider | None, Depends(vision_provider)]

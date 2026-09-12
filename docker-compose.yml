@@ -63,6 +63,12 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-prism}:${POSTGRES_PASSWORD:-prism}@postgres:5432/${POSTGRES_DB:-prism}
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL_CONTAINER:-http://host.docker.internal:11434}
+      # The default lane is local and free; only an explicit VISION_LANE=gemini
+      # spends money, and only with a key.
+      VISION_ENABLED: ${VISION_ENABLED:-false}
+      VISION_LANE: ${VISION_LANE:-ollama}
+      VISION_OLLAMA_MODEL: ${VISION_OLLAMA_MODEL:-qwen2.5vl:7b}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
       # A `ready` document whose bytes vanished on rebuild cannot be re-ingested.
       - uploads:/app/var/uploads

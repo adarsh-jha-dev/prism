@@ -17,7 +17,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
-from prism.api.deps import ProviderDep, SettingsDep
+from prism.api.deps import ProviderDep, SettingsDep, VisionDep
 from prism.collections import (
     CollectionNotFoundError,
     EmbeddingModelMismatchError,
@@ -29,10 +29,12 @@ from prism.ingestion import (
     PDF_MIME_TYPE,
     ExtractionError,
     IngestionError,
+    RenderError,
     create_document,
     ingest_document,
 )
 from prism.storage import UploadTooLargeError, write_blob
+from prism.vision import VisionError
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/collections/{collection_id}/documents", tags=["documents"])
@@ -47,6 +49,7 @@ class DocumentUploaded(BaseModel):
     status: Literal["ready"]
     pages: int
     chunks: int
+    figures: int  # figure/table/equation chunks among `chunks`
     size_bytes: int
     sha256: str
 
@@ -64,6 +67,7 @@ async def upload_document(
     request: Request,
     collection_id: UUID,
     provider: ProviderDep,
+    vision: VisionDep,
     settings: SettingsDep,
     file: Annotated[UploadFile, File(description="A PDF with a text layer.")],
 ) -> DocumentUploaded:
@@ -133,17 +137,23 @@ async def upload_document(
     # The blob outlives a failed ingest: a retry needs the bytes, not a re-upload.
     try:
         result = await ingest_document(
-            blob.path, document_id=document_id, provider=provider, settings=settings
+            blob.path,
+            document_id=document_id,
+            provider=provider,
+            vision=vision,
+            settings=settings,
         )
     except CollectionNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=_failed(document_id, exc)) from exc
     except EmbeddingModelMismatchError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=_failed(document_id, exc)) from exc
-    except (ExtractionError, IngestionError) as exc:
+    except (ExtractionError, IngestionError, RenderError) as exc:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, detail=_failed(document_id, exc)
         ) from exc
-    except (EmbeddingError, SQLAlchemyError) as exc:
+    # A provider that is down is this service's problem, not the document's:
+    # the same bytes ingest on retry.
+    except (EmbeddingError, VisionError, SQLAlchemyError) as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, detail=_failed(document_id, exc)
         ) from exc
@@ -155,6 +165,7 @@ async def upload_document(
         filename=filename,
         pages=result.pages,
         chunks=result.chunks,
+        figures=result.figures,
         size_bytes=blob.size_bytes,
     )
     return DocumentUploaded(
@@ -164,6 +175,7 @@ async def upload_document(
         status="ready",
         pages=result.pages,
         chunks=result.chunks,
+        figures=result.figures,
         size_bytes=blob.size_bytes,
         sha256=blob.sha256,
     )
