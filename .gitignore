@@ -33,4 +33,5 @@ var/
 
 # Eval corpus: PDFs stay local, the manifest is committed
 services/api/eval/corpus/
-services/api/eval/runs/
+services/api/eval/runs/*
+!services/api/eval/runs/baseline-*.json

@@ -18,7 +18,8 @@ here generates.
 | `corpus.yaml` | Committed manifest — filename, sha256, source. The PDFs it names are **not** committed; they live in `corpus/`, which is gitignored. |
 | `golden.yaml` | Committed question set. |
 | `corpus/` | The PDFs. Local only. |
-| `runs/` | JSON reports from `make eval`. Local only. |
+| `runs/baseline-*.json` | Committed. The pinned baselines the optimized system is measured against. |
+| `runs/` | Every other report from `make eval`. Local only. |
 
 Adding a paper: drop the PDF in `corpus/`, `shasum -a 256` it, add the entry to
 `corpus.yaml`. `make eval-ingest` verifies every digest before writing anything,
@@ -62,3 +63,19 @@ That applies to embedding task prefixes in particular. Retrieval currently
 embeds both documents and queries with no prefix (`query_prefix: null` in the
 report). Adding `search_document:` / `search_query:` re-embeds the corpus and
 invalidates every earlier run.
+
+## Pinned baselines
+
+| | recorded | recall@10 | mrr | notes |
+|---|---|---|---|---|
+| `runs/baseline-2026-09-11.json` | 2026-09-11 | 0.68 | 0.461 | Naive retrieval, before any correction loop. 31 questions, 482 chunks over 7 documents. |
+
+`make eval` writes `runs/latest.json`, which stays ignored. Pinning a baseline
+means copying one to `runs/baseline-<date>.json` and committing it — the report
+carries no timestamp of its own, so the filename is the record.
+
+A pinned baseline must have been recorded against the question set committed
+beside it, or it is measuring something the repo no longer contains.
+`tests/test_eval_baseline.py` enforces that: it checks every pinned file covers
+exactly the committed ids and was scored against the committed labels. Change
+golden.yaml and that test fails until the baseline is re-recorded.
