@@ -100,6 +100,13 @@ floor **0.44** · cost budget **$0.0050/query** · latency budget **6s/query**.
 When no provider meets both budgets, that is a refusal — never a silent
 overspend.
 
+`abstention_threshold` (tau) applies **only** to the grader's groundedness score
+at `verify_grounding`. It must never be compared against a cosine similarity:
+the two are different quantities that happen to share a 0-1 scale, and on the
+golden set similarity does not separate answerable from unanswerable at any
+threshold (`eval/README.md`). Retrieval decides relevance at `grade_docs` and
+`rerank_score_floor`; tau decides groundedness.
+
 ## Settled decisions
 
 - **CI must never make a paid call.** Paid providers are record-and-replay

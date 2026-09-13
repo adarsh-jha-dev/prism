@@ -51,6 +51,29 @@ to sit to refuse all of them, and how many clear tau today. Correct refusal is
 this project's primary correctness criterion, so the set carries these from the
 start.
 
+### Cosine similarity cannot decide refusal
+
+On `baseline-2026-09-11.json` the two classes overlap almost completely:
+
+| | top-1 similarity |
+|---|---|
+| 6 unanswerable | 0.593 - 0.740, **all six above tau (0.58)** |
+| 25 answerable | 0.509 - 0.805 |
+
+The overlap band 0.593-0.740 holds 16 of the 25 answerable questions. Only one
+answerable question (`gq-018`, 0.509) scores below every unanswerable one, and
+only 8 clear the highest. A threshold set high enough to refuse all six
+unanswerable would refuse 17 of 25 answerable questions with it; one low enough
+to answer them refuses nothing. **No similarity threshold separates the two
+classes on this set.**
+
+That is the measured case for `grade_docs` being load-bearing rather than an
+optimisation. Retrieval returns something confident for a question the corpus
+cannot answer — that is what a nearest-neighbour index does — so the decision to
+refuse has to come from a model reading the passages, not from the distance that
+retrieved them. It is also why `abstention_threshold` is a groundedness
+threshold only, and never compared against a retrieval score.
+
 ## Comparability
 
 A recall number is evidence of an improvement only against a comparable run.
