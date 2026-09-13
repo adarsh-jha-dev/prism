@@ -15,6 +15,7 @@ from sqlalchemy import text
 from pdf_builder import build_pdf
 from prism.collections import (
     CollectionNotFoundError,
+    CollectionRef,
     EmbeddingModelMismatchError,
     assert_collection_compatible,
 )
@@ -52,12 +53,14 @@ async def ingest(
     filename: str,
     provider: EmbeddingProvider,
     settings: Settings | None = None,
+    collection: CollectionRef,
 ) -> IngestionResult:
     """Record the document, then ingest it — the order the endpoint uses."""
     document_id = uuid7()
     await create_document(
         document_id=document_id,
         collection_id=collection_id,
+        tenant_id=collection.tenant_id,
         filename=filename,
         mime_type=PDF_MIME_TYPE,
     )
@@ -93,12 +96,15 @@ async def fetch_chunks(document_id: UUID) -> list[dict[str, object]]:
     return [dict(row._mapping) for row in rows]
 
 
-async def test_a_pdf_becomes_a_ready_document_and_its_chunks(collection_id: UUID) -> None:
+async def test_a_pdf_becomes_a_ready_document_and_its_chunks(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     pdf = io.BytesIO(build_pdf([["alpha"], ["beta"], ["gamma"]]))
 
     result = await ingest(
         pdf,
         collection_id=collection_id,
+        collection=collection,
         filename="three-pages.pdf",
         provider=StubProvider(),
         settings=settings(),
@@ -120,11 +126,14 @@ async def test_a_pdf_becomes_a_ready_document_and_its_chunks(collection_id: UUID
     assert {c["chunk_type"] for c in chunks} == {"text"}
 
 
-async def test_chunks_carry_the_collection_id_denormalized(collection_id: UUID) -> None:
+async def test_chunks_carry_the_collection_id_denormalized(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     """Scoping has to be a predicate inside the ANN query, so it lives on the row."""
     result = await ingest(
         io.BytesIO(build_pdf([["scoped"]])),
         collection_id=collection_id,
+        collection=collection,
         filename="scoped.pdf",
         provider=StubProvider(),
         settings=settings(),
@@ -134,12 +143,13 @@ async def test_chunks_carry_the_collection_id_denormalized(collection_id: UUID) 
 
 
 async def test_reading_order_is_recorded_because_ids_cannot_carry_it(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     """A document's chunks share a millisecond, and UUIDv7 is random below that."""
     result = await ingest(
         io.BytesIO(build_pdf([["one"], ["two"], ["three"], ["four"]])),
         collection_id=collection_id,
+        collection=collection,
         filename="ordered.pdf",
         provider=StubProvider(),
         settings=settings(),
@@ -150,10 +160,13 @@ async def test_reading_order_is_recorded_because_ids_cannot_carry_it(
     assert all(UUID(str(c["id"])).version == 7 for c in chunks)
 
 
-async def test_chunk_index_runs_across_pages_not_within_them(collection_id: UUID) -> None:
+async def test_chunk_index_runs_across_pages_not_within_them(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     result = await ingest(
         io.BytesIO(build_pdf([["abcdef"], ["ghijkl"]])),
         collection_id=collection_id,
+        collection=collection,
         filename="across.pdf",
         provider=StubProvider(),
         settings=settings(size=3, overlap=0),
@@ -167,10 +180,13 @@ async def test_chunk_index_runs_across_pages_not_within_them(collection_id: UUID
     ]
 
 
-async def test_embeddings_land_in_the_vector_column(collection_id: UUID) -> None:
+async def test_embeddings_land_in_the_vector_column(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     result = await ingest(
         io.BytesIO(build_pdf([["embedded"]])),
         collection_id=collection_id,
+        collection=collection,
         filename="embedded.pdf",
         provider=StubProvider(),
         settings=settings(),
@@ -182,12 +198,13 @@ async def test_embeddings_land_in_the_vector_column(collection_id: UUID) -> None
 
 
 async def test_an_ingested_chunk_is_retrievable_by_nearest_neighbour(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     """The point of ingesting at all: the chunk comes back for its own vector."""
     await ingest(
         io.BytesIO(build_pdf([["needle"], ["haystack"]])),
         collection_id=collection_id,
+        collection=collection,
         filename="retrievable.pdf",
         provider=StubProvider(),
         settings=settings(),
@@ -206,12 +223,13 @@ async def test_an_ingested_chunk_is_retrievable_by_nearest_neighbour(
 
 
 async def test_a_long_page_becomes_several_chunks_on_the_same_page(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     page = "".join(f"line {n} of the page. " for n in range(40))
     result = await ingest(
         io.BytesIO(build_pdf([[page]])),
         collection_id=collection_id,
+        collection=collection,
         filename="long.pdf",
         provider=StubProvider(),
         settings=settings(size=100, overlap=20),
@@ -222,11 +240,12 @@ async def test_a_long_page_becomes_several_chunks_on_the_same_page(
 
 
 async def test_a_blank_page_produces_no_chunks_but_still_counts_as_a_page(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     result = await ingest(
         io.BytesIO(build_pdf([["front"], [], ["back"]])),
         collection_id=collection_id,
+        collection=collection,
         filename="gap.pdf",
         provider=StubProvider(),
         settings=settings(),
@@ -235,11 +254,12 @@ async def test_a_blank_page_produces_no_chunks_but_still_counts_as_a_page(
     assert [c["page_number"] for c in await fetch_chunks(result.document_id)] == [1, 3]
 
 
-async def test_embedding_is_batched(collection_id: UUID) -> None:
+async def test_embedding_is_batched(collection_id: UUID, collection: CollectionRef) -> None:
     provider = StubProvider()
     await ingest(
         io.BytesIO(build_pdf([["a"], ["b"], ["c"], ["d"], ["e"]])),
         collection_id=collection_id,
+        collection=collection,
         filename="batched.pdf",
         provider=provider,
         settings=settings(batch=2),
@@ -248,13 +268,14 @@ async def test_embedding_is_batched(collection_id: UUID) -> None:
 
 
 async def test_a_scanned_pdf_fails_the_document_rather_than_ingesting_nothing(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     """An empty document would surface later as an unexplained retrieval miss."""
     with pytest.raises(ExtractionError, match="no text layer"):
         await ingest(
             io.BytesIO(build_pdf([[], []])),
             collection_id=collection_id,
+            collection=collection,
             filename="scanned.pdf",
             provider=StubProvider(),
             settings=settings(),
@@ -275,12 +296,13 @@ async def test_a_scanned_pdf_fails_the_document_rather_than_ingesting_nothing(
 
 
 async def test_an_embedding_failure_leaves_a_failed_document_with_no_chunks(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     with pytest.raises(EmbeddingError):
         await ingest(
             io.BytesIO(build_pdf([["good"], ["poison"]])),
             collection_id=collection_id,
+            collection=collection,
             filename="halfway.pdf",
             provider=StubProvider(fail_on="poison"),
             settings=settings(),
@@ -307,6 +329,7 @@ async def test_an_unknown_collection_writes_no_document_row() -> None:
         await ingest(
             io.BytesIO(build_pdf([["orphan"]])),
             collection_id=missing,
+            collection=CollectionRef(tenant_id=uuid7(), collection_id=missing),
             filename="orphan.pdf",
             provider=StubProvider(),
             settings=settings(),
@@ -322,7 +345,7 @@ async def test_an_unknown_collection_writes_no_document_row() -> None:
 
 
 async def test_a_provider_the_collection_was_not_built_for_is_refused(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     """Mixing embedding models in one index returns rows that mean nothing."""
 
@@ -331,11 +354,13 @@ async def test_a_provider_the_collection_was_not_built_for_is_refused(
         dim = 1024
 
     with pytest.raises(EmbeddingModelMismatchError, match="nomic-embed-text/768-dim"):
-        await assert_collection_compatible(collection_id, WrongProvider())
+        await assert_collection_compatible(
+            collection_id, WrongProvider(), tenant_id=collection.tenant_id
+        )
 
 
 async def test_a_mismatched_provider_leaves_the_document_pending_not_failed(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     """A stored document is not at fault for a misconfigured provider: it stays
     claimable, so fixing the configuration is enough to retry it."""
@@ -343,6 +368,7 @@ async def test_a_mismatched_provider_leaves_the_document_pending_not_failed(
     await create_document(
         document_id=document_id,
         collection_id=collection_id,
+        tenant_id=collection.tenant_id,
         filename="mismatched.pdf",
         mime_type=PDF_MIME_TYPE,
     )
@@ -365,12 +391,15 @@ async def test_a_mismatched_provider_leaves_the_document_pending_not_failed(
     assert await fetch_chunks(document_id) == []
 
 
-async def test_a_document_is_not_ingested_twice(collection_id: UUID) -> None:
+async def test_a_document_is_not_ingested_twice(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     """Two workers pulling the same queue message must not double its chunks."""
     document_id = uuid7()
     await create_document(
         document_id=document_id,
         collection_id=collection_id,
+        tenant_id=collection.tenant_id,
         filename="once.pdf",
         mime_type=PDF_MIME_TYPE,
     )
@@ -392,12 +421,15 @@ async def test_a_document_is_not_ingested_twice(collection_id: UUID) -> None:
     assert len(await fetch_chunks(document_id)) == 1
 
 
-async def test_a_failed_document_can_be_ingested_again(collection_id: UUID) -> None:
+async def test_a_failed_document_can_be_ingested_again(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     """The blob outlives the failure, so a retry needs no second upload."""
     document_id = uuid7()
     await create_document(
         document_id=document_id,
         collection_id=collection_id,
+        tenant_id=collection.tenant_id,
         filename="retried.pdf",
         mime_type=PDF_MIME_TYPE,
     )
@@ -422,7 +454,7 @@ async def test_a_failed_document_can_be_ingested_again(collection_id: UUID) -> N
 
 
 async def test_a_non_pdf_document_is_refused_without_being_claimed(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     """Only the PDF path exists; a recorded document of another type waits for
     one rather than being marked failed."""
@@ -430,6 +462,7 @@ async def test_a_non_pdf_document_is_refused_without_being_claimed(
     await create_document(
         document_id=document_id,
         collection_id=collection_id,
+        tenant_id=collection.tenant_id,
         filename="diagram.png",
         mime_type="image/png",
     )
@@ -463,7 +496,9 @@ async def test_the_stub_satisfies_the_real_provider_protocol() -> None:
 
 
 @pytest.mark.ollama
-async def test_end_to_end_with_the_real_embedding_provider(collection_id: UUID) -> None:
+async def test_end_to_end_with_the_real_embedding_provider(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     """Everything at once: PDF in, and the ingested text is findable by meaning."""
     provider = OllamaEmbeddingProvider()
     result = await ingest(
@@ -471,6 +506,7 @@ async def test_end_to_end_with_the_real_embedding_provider(collection_id: UUID) 
             build_pdf([["The cat sat on the mat."], ["Quarterly revenue grew twelve percent."]])
         ),
         collection_id=collection_id,
+        collection=collection,
         filename="real.pdf",
         provider=provider,
     )

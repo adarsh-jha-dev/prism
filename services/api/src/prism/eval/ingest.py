@@ -1,9 +1,9 @@
 """Ingest the eval corpus into a local collection.
 
-A dev helper, not a service path. The API has no endpoint that creates a tenant
-or a collection yet, so this writes those two rows itself — the same thing the
-integration tests do, and the reason `make eval` can be run from a clean
-database without a psql session.
+A dev helper, not a service path. The tenant and collection come from
+`prism.tenancy`, the same functions POST /tenants and POST /collections call, so
+`make eval` still runs from a clean database without a psql session and without
+a second definition of what those rows look like.
 
 Re-runnable. A document whose digest is already present in the collection is
 skipped rather than ingested twice, because a second copy of a paper would put
@@ -30,6 +30,7 @@ from prism.db import get_engine
 from prism.embeddings import EmbeddingProvider, get_embedding_provider
 from prism.eval.golden import Corpus, CorpusDocument
 from prism.ingestion import PDF_MIME_TYPE, create_document, ingest_document
+from prism.tenancy import ensure_collection, ensure_tenant
 
 __all__ = ["CorpusError", "IngestOutcome", "ingest_corpus", "sha256_of"]
 
@@ -37,15 +38,6 @@ log = structlog.get_logger(__name__)
 
 _READ_CHUNK_BYTES = 1024 * 1024
 
-_SELECT_TENANT = text("SELECT id FROM tenants WHERE name = :name")
-_INSERT_TENANT = text("INSERT INTO tenants (id, name) VALUES (:id, :name)")
-_SELECT_COLLECTION = text(
-    "SELECT id FROM collections WHERE tenant_id = :tenant_id AND name = :name"
-)
-_INSERT_COLLECTION = text(
-    "INSERT INTO collections (id, tenant_id, name, embedding_model, embedding_dim) "
-    "VALUES (:id, :tenant_id, :name, :model, :dim) ON CONFLICT DO NOTHING"
-)
 _SELECT_BY_DIGEST = text(
     "SELECT id, status FROM documents WHERE collection_id = :collection_id AND sha256 = :sha256"
 )
@@ -87,36 +79,6 @@ def _verify(document: CorpusDocument, corpus_dir: Path) -> Path:
     return path
 
 
-async def _ensure_collection(
-    name: str, *, tenant: str, provider: EmbeddingProvider, engine: AsyncEngine
-) -> UUID:
-    """The collection id, creating the tenant and collection if they are absent."""
-    async with engine.begin() as conn:
-        row = (await conn.execute(_SELECT_TENANT, {"name": tenant})).first()
-        if row is None:
-            tenant_id = uuid7()
-            await conn.execute(_INSERT_TENANT, {"id": tenant_id, "name": tenant})
-        else:
-            tenant_id = row.id
-
-        await conn.execute(
-            _INSERT_COLLECTION,
-            {
-                "id": uuid7(),
-                "tenant_id": tenant_id,
-                "name": name,
-                "model": provider.model,
-                "dim": provider.dim,
-            },
-        )
-        collection_id: UUID = (
-            (await conn.execute(_SELECT_COLLECTION, {"tenant_id": tenant_id, "name": name}))
-            .one()
-            .id
-        )
-    return collection_id
-
-
 async def ingest_corpus(
     corpus: Corpus,
     *,
@@ -138,9 +100,16 @@ async def ingest_corpus(
     engine = engine or get_engine()
 
     paths = {document.filename: _verify(document, corpus_dir) for document in corpus.documents}
-    collection_id = await _ensure_collection(
-        collection, tenant=tenant, provider=provider, engine=engine
+    tenant_row = await ensure_tenant(tenant, engine=engine)
+    row = await ensure_collection(
+        tenant_id=tenant_row.id,
+        name=collection,
+        embedding_model=provider.model,
+        embedding_dim=provider.dim,
+        engine=engine,
     )
+    ref = row.ref
+    collection_id = ref.collection_id
 
     ingested: list[str] = []
     skipped: list[str] = []
@@ -165,6 +134,7 @@ async def ingest_corpus(
             await create_document(
                 document_id=document_id,
                 collection_id=collection_id,
+                tenant_id=ref.tenant_id,
                 filename=document.filename,
                 mime_type=PDF_MIME_TYPE,
                 size_bytes=path.stat().st_size,

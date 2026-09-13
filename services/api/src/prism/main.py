@@ -3,13 +3,14 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from prism import __version__
-from prism.api.routes import documents, health, search
+from prism.api.routes import collections, documents, health, search, tenants
 from prism.config import get_settings
 from prism.db import lifespan_resources
 
@@ -53,7 +54,20 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def rate_limit_headers(request: Request, call_next: Any) -> Response:
+        """Attach the limit to every response, including the ones that refuse."""
+        response: Response = await call_next(request)
+        state = getattr(request.state, "rate_limit", None)
+        if state is not None:
+            response.headers.update(state.headers)
+        return response
+
     app.include_router(health.router)
+    app.include_router(tenants.router)
+    # Before the routers that nest under /collections/{id}.
+    app.include_router(collections.router)
     app.include_router(documents.router)
     app.include_router(search.router)
     return app

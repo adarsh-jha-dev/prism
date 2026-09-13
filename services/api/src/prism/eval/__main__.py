@@ -90,14 +90,12 @@ async def _recall(args: argparse.Namespace) -> int:
         return 2
 
     settings = get_settings()
-    collection_id = await resolve_collection(golden.collection, tenant=args.tenant)
-    results = await run_golden_set(
-        golden, collection_id=collection_id, k=max(ks), settings=settings
-    )
+    ref = await resolve_collection(golden.collection, tenant=args.tenant)
+    results = await run_golden_set(golden, collection=ref, k=max(ks), settings=settings)
     report = build_report(
         golden=golden,
         results=results,
-        stats=await collection_stats(collection_id),
+        stats=await collection_stats(ref.collection_id),
         settings=settings,
         ks=ks,
     )

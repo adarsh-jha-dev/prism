@@ -66,8 +66,9 @@ async def test_vector_roundtrip_and_nearest_neighbour() -> None:
         )
         await conn.execute(
             text(
-                "INSERT INTO documents (id, collection_id, filename, mime_type) "
-                "VALUES (:id, :collection_id, 'test.pdf', 'application/pdf')"
+                "INSERT INTO documents (id, collection_id, tenant_id, filename, mime_type) "
+                "SELECT :id, c.id, c.tenant_id, 'test.pdf', 'application/pdf' "
+                "FROM collections c WHERE c.id = :collection_id"
             ),
             {"id": document_id, "collection_id": collection_id},
         )
@@ -75,9 +76,10 @@ async def test_vector_roundtrip_and_nearest_neighbour() -> None:
             await conn.execute(
                 text(
                     "INSERT INTO chunks "
-                    "(id, document_id, collection_id, content, embedding) "
-                    "VALUES (:id, :document_id, :collection_id, :content, "
-                    "CAST(:embedding AS vector))"
+                    "(id, document_id, collection_id, tenant_id, content, embedding) "
+                    "SELECT :id, d.id, d.collection_id, d.tenant_id, :content, "
+                    "       CAST(:embedding AS vector) "
+                    "FROM documents d WHERE d.id = :document_id"
                 ),
                 {
                     "id": uuid7(),

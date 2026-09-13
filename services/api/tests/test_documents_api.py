@@ -64,7 +64,9 @@ def configured(
     app.dependency_overrides.clear()
 
 
-def upload(content: bytes, filename: str = "doc.pdf", content_type: str = "application/pdf"):
+def upload(
+    content: bytes, filename: str = "doc.pdf", content_type: str = "application/pdf"
+) -> dict[str, tuple[str, bytes, str]]:
     return {"file": (filename, content, content_type)}
 
 

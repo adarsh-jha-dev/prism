@@ -3,8 +3,9 @@
 No grading and no generation: this is the retrieval baseline the benchmark
 measures the correction loop against, and the scores are raw cosine similarity.
 
-The collection in the path is the only scope there is until API keys land, and
-it is enforced inside the ANN query rather than over its results.
+Scope is the caller's tenant and the collection in the path, both enforced as
+predicates inside the ANN query rather than over its results. The tenant comes
+from the bearer key; a collection the caller does not own is a 404.
 """
 
 from typing import Annotated
@@ -15,7 +16,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import SQLAlchemyError
 
-from prism.api.deps import ProviderDep, SettingsDep
+from prism.api.deps import ProviderDep, ReadDep, SettingsDep
 from prism.collections import CollectionNotFoundError, EmbeddingModelMismatchError
 from prism.embeddings import EmbeddingError
 from prism.retrieval import search_chunks
@@ -60,6 +61,7 @@ class SearchResults(BaseModel):
 async def search(
     collection_id: UUID,
     request: SearchRequest,
+    key: ReadDep,
     provider: ProviderDep,
     settings: SettingsDep,
 ) -> SearchResults:
@@ -69,6 +71,7 @@ async def search(
     try:
         hits = await search_chunks(
             request.query,
+            tenant_id=key.tenant_id,
             collection_id=collection_id,
             k=k,
             provider=provider,
@@ -85,6 +88,7 @@ async def search(
 
     log.info(
         "collection_searched",
+        tenant_id=str(key.tenant_id),
         collection_id=str(collection_id),
         k=k,
         hits=len(hits),

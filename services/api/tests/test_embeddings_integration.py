@@ -68,8 +68,9 @@ async def collection() -> AsyncIterator[tuple[UUID, UUID]]:
         )
         await conn.execute(
             text(
-                "INSERT INTO documents (id, collection_id, filename, mime_type) "
-                "VALUES (:id, :collection_id, 'embed-test.txt', 'text/plain')"
+                "INSERT INTO documents (id, collection_id, tenant_id, filename, mime_type) "
+                "SELECT :id, c.id, c.tenant_id, 'embed-test.txt', 'text/plain' "
+                "FROM collections c WHERE c.id = :collection_id"
             ),
             {"id": document_id, "collection_id": collection_id},
         )
@@ -128,8 +129,11 @@ async def test_embedding_round_trips_through_pgvector(
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                "INSERT INTO chunks (id, document_id, collection_id, content, embedding) "
-                "VALUES (:id, :document_id, :collection_id, :content, CAST(:embedding AS vector))"
+                "INSERT INTO chunks "
+                "(id, document_id, collection_id, tenant_id, content, embedding) "
+                "SELECT :id, d.id, d.collection_id, d.tenant_id, :content, "
+                "       CAST(:embedding AS vector) "
+                "FROM documents d WHERE d.id = :document_id"
             ),
             {
                 "id": chunk_id,
@@ -169,8 +173,11 @@ async def test_nearest_neighbour_finds_the_semantic_match(
         for content, vector in zip(corpus, vectors, strict=True):
             await conn.execute(
                 text(
-                    "INSERT INTO chunks (id, document_id, collection_id, content, embedding) "
-                    "VALUES (:id, :d, :c, :content, CAST(:e AS vector))"
+                    "INSERT INTO chunks "
+                    "(id, document_id, collection_id, tenant_id, content, embedding) "
+                    "SELECT :id, d.id, d.collection_id, d.tenant_id, :content, "
+                    "       CAST(:e AS vector) "
+                    "FROM documents d WHERE d.id = :d"
                 ),
                 {
                     "id": uuid7(),
@@ -222,8 +229,11 @@ async def test_scoped_ann_query_uses_the_hnsw_index(collection: tuple[UUID, UUID
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                "INSERT INTO chunks (id, document_id, collection_id, content, embedding) "
-                "VALUES (:id, :d, :c, :content, CAST(:e AS vector))"
+                "INSERT INTO chunks "
+                "(id, document_id, collection_id, tenant_id, content, embedding) "
+                "SELECT :id, d.id, d.collection_id, d.tenant_id, :content, "
+                "       CAST(:e AS vector) "
+                "FROM documents d WHERE d.id = :d"
             ),
             rows,
         )

@@ -100,6 +100,13 @@ floor **0.44** · cost budget **$0.0050/query** · latency budget **6s/query**.
 When no provider meets both budgets, that is a refusal — never a silent
 overspend.
 
+`abstention_threshold` (tau) applies **only** to the grader's groundedness score
+at `verify_grounding`. It must never be compared against a cosine similarity:
+the two are different quantities that happen to share a 0-1 scale, and on the
+golden set similarity does not separate answerable from unanswerable at any
+threshold (`eval/README.md`). Retrieval decides relevance at `grade_docs` and
+`rerank_score_floor`; tau decides groundedness.
+
 ## Settled decisions
 
 - **CI must never make a paid call.** Paid providers are record-and-replay
@@ -126,7 +133,7 @@ overspend.
    `/design-login`). Later revision than the PDFs; wins over them.
 3. `docs/design/*.pdf|png` — still the only source for the ER schema.
 
-Target numbers are **honest portfolio scale**: 30-query golden set, 72 injection
+Target numbers are **honest portfolio scale**: 31-query golden set, 72 injection
 payloads, ~612 queries/24h, −95% cost and −34% p95 vs a single-shot paid-API
 baseline, $0.00019 mean cost/query, 2.71s p95, 1/72 injections succeeding.
 Bigger numbers in the PDFs are stale — do not quote them.

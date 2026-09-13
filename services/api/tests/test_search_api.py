@@ -13,8 +13,12 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
+from conftest import Authenticate
 from prism.api.deps import embedding_provider
+from prism.auth import Scope
+from prism.collections import CollectionRef
 from prism.config import Settings, get_settings
+from prism.core.ids import uuid7
 from prism.embeddings import EmbeddingError
 from seeding import seed
 from stub_provider import DIM, MODEL, QueryProvider, StubProvider, graded
@@ -195,3 +199,62 @@ async def test_scores_stay_within_the_cosine_range(
     assert scores == sorted(scores, reverse=True)
     assert all(-1.0 - 1e-9 <= score <= 1.0 + 1e-9 for score in scores)
     assert not any(math.isnan(score) for score in scores)
+
+
+@pytest.mark.integration
+async def test_a_tenant_cannot_search_another_tenants_collection(
+    client: AsyncClient,
+    configured: dict[str, Any],
+    collection: CollectionRef,
+    other_collection: CollectionRef,
+) -> None:
+    """The security fix, end to end.
+
+    The caller is authenticated as their own tenant and addresses the victim's
+    real collection id. It must read as absent, not as forbidden: a 403 would
+    confirm the collection exists.
+    """
+    await seed(other_collection.collection_id, [("their secret", graded(1.0))])
+
+    response = await client.post(
+        URL.format(other_collection.collection_id), json={"query": "anything"}
+    )
+
+    assert response.status_code == 404
+    assert "their secret" not in response.text
+
+
+async def test_an_unauthenticated_search_is_401(
+    client: AsyncClient, configured: dict[str, Any], unauthenticated: None, provider: QueryProvider
+) -> None:
+
+    response = await client.post(URL.format(UNKNOWN), json={"query": "anything"})
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert provider.queries == []
+
+
+async def test_an_unparseable_key_is_401_without_a_database_round_trip(
+    client: AsyncClient, configured: dict[str, Any], unauthenticated: None
+) -> None:
+
+    response = await client.post(
+        URL.format(UNKNOWN),
+        json={"query": "anything"},
+        headers={"Authorization": "Bearer sk-somebody-elses-key"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "invalid bearer key"
+
+
+async def test_a_key_without_the_read_scope_is_403(
+    client: AsyncClient, authenticate: Authenticate, provider: QueryProvider
+) -> None:
+    authenticate(uuid7(), Scope.INGEST)
+
+    response = await client.post(URL.format(UNKNOWN), json={"query": "anything"})
+
+    assert response.status_code == 403
+    assert provider.queries == []

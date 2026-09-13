@@ -31,6 +31,18 @@ def get_redis() -> aioredis.Redis:
     return _redis
 
 
+async def close_redis() -> None:
+    """Close the shared client. The next get_redis() opens a fresh one.
+
+    A redis-py client binds to the event loop it was created on, so anything
+    that runs each test on its own loop has to close it between them.
+    """
+    global _redis
+    if _redis is not None:
+        await _redis.aclose()
+        _redis = None
+
+
 @asynccontextmanager
 async def lifespan_resources() -> AsyncIterator[None]:
     """Open shared clients on startup, close them on shutdown."""
@@ -39,10 +51,8 @@ async def lifespan_resources() -> AsyncIterator[None]:
     try:
         yield
     finally:
-        global _engine, _redis
-        if _redis is not None:
-            await _redis.aclose()
-            _redis = None
+        global _engine
+        await close_redis()
         if _engine is not None:
             await _engine.dispose()
             _engine = None

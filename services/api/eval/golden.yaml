@@ -1,4 +1,6 @@
-# The golden set: 30 question/answer pairs, hand-written from the corpus.
+# The golden set: 31 question/answer pairs, hand-written from the corpus —
+# 25 answerable, 6 unanswerable. Ids are never reused, so the count and the
+# highest id do not agree.
 #
 # Relevance is recorded as (document, page), never as a chunk id. Chunk ids are
 # UUIDv7 minted at ingest, so they change on every re-ingest and whenever

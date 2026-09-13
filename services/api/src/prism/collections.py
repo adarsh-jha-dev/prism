@@ -9,6 +9,7 @@ either of them.
 `assert_collection_compatible` opens its own.
 """
 
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import text
@@ -20,12 +21,30 @@ from prism.embeddings import EmbeddingProvider
 __all__ = [
     "CollectionError",
     "CollectionNotFoundError",
+    "CollectionRef",
     "EmbeddingModelMismatchError",
     "assert_collection_compatible",
     "assert_compatible",
 ]
 
-_SELECT_COLLECTION = text("SELECT embedding_model, embedding_dim FROM collections WHERE id = :id")
+# tenant_id is part of the lookup, not a check after it: a collection owned by
+# another tenant must be indistinguishable from one that does not exist.
+_SELECT_COLLECTION = text(
+    "SELECT embedding_model, embedding_dim FROM collections "
+    "WHERE id = :id AND tenant_id = :tenant_id"
+)
+
+
+@dataclass(frozen=True)
+class CollectionRef:
+    """A collection and the tenant that owns it.
+
+    Kept together because every scoped query needs both: a collection id on its
+    own is not enough to address anything safely.
+    """
+
+    tenant_id: UUID
+    collection_id: UUID
 
 
 class CollectionError(RuntimeError):
@@ -41,10 +60,16 @@ class EmbeddingModelMismatchError(CollectionError):
 
 
 async def assert_compatible(
-    conn: AsyncConnection, collection_id: UUID, provider: EmbeddingProvider
+    conn: AsyncConnection,
+    collection_id: UUID,
+    provider: EmbeddingProvider,
+    *,
+    tenant_id: UUID,
 ) -> None:
     """Raises CollectionNotFoundError or EmbeddingModelMismatchError."""
-    row = (await conn.execute(_SELECT_COLLECTION, {"id": collection_id})).first()
+    row = (
+        await conn.execute(_SELECT_COLLECTION, {"id": collection_id, "tenant_id": tenant_id})
+    ).first()
     if row is None:
         raise CollectionNotFoundError(f"collection {collection_id} does not exist")
 
@@ -57,7 +82,11 @@ async def assert_compatible(
 
 
 async def assert_collection_compatible(
-    collection_id: UUID, provider: EmbeddingProvider, *, engine: AsyncEngine | None = None
+    collection_id: UUID,
+    provider: EmbeddingProvider,
+    *,
+    tenant_id: UUID,
+    engine: AsyncEngine | None = None,
 ) -> None:
     async with (engine or get_engine()).connect() as conn:
-        await assert_compatible(conn, collection_id, provider)
+        await assert_compatible(conn, collection_id, provider, tenant_id=tenant_id)
