@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import SQLAlchemyError
 
 from prism import tenancy
-from prism.api.deps import AdminTokenDep, KeyDep
+from prism.api.deps import AdminTokenDep, MeteredDep
 from prism.tenancy import AlreadyExistsError, TenantRow
 
 log = structlog.get_logger(__name__)
@@ -75,7 +75,7 @@ async def list_tenants(_: AdminTokenDep) -> list[Tenant]:
 
 
 @router.get("/me")
-async def read_own_tenant(key: KeyDep) -> Tenant:
+async def read_own_tenant(key: MeteredDep) -> Tenant:
     """The caller's own tenant, from their key. Discloses nothing they lack."""
     try:
         row = await tenancy.read_tenant(key.tenant_id)

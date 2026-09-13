@@ -10,7 +10,7 @@ from httpx import AsyncClient
 from sqlalchemy import text
 
 from conftest import Authenticate
-from prism.api.deps import embedding_provider, require_key
+from prism.api.deps import embedding_provider
 from prism.auth import Scope, resolve_key
 from prism.collections import CollectionRef
 from prism.config import Settings, get_settings
@@ -145,9 +145,8 @@ class TestReadOwnTenant:
         assert UUID(response.json()["id"]) == collection.tenant_id
 
     async def test_it_needs_a_key(
-        self, client: AsyncClient, app: FastAPI, configured: None
+        self, client: AsyncClient, configured: None, unauthenticated: None
     ) -> None:
-        app.dependency_overrides.pop(require_key)
         assert (await client.get("/tenants/me")).status_code == 401
 
 

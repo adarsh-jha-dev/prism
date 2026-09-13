@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from httpx import AsyncClient
 
 from conftest import Authenticate
-from prism.api.deps import embedding_provider, require_key
+from prism.api.deps import embedding_provider
 from prism.auth import Scope
 from prism.collections import CollectionRef
 from prism.config import Settings, get_settings
@@ -225,9 +225,8 @@ async def test_a_tenant_cannot_search_another_tenants_collection(
 
 
 async def test_an_unauthenticated_search_is_401(
-    client: AsyncClient, app: FastAPI, configured: dict[str, Any], provider: QueryProvider
+    client: AsyncClient, configured: dict[str, Any], unauthenticated: None, provider: QueryProvider
 ) -> None:
-    app.dependency_overrides.pop(require_key)
 
     response = await client.post(URL.format(UNKNOWN), json={"query": "anything"})
 
@@ -237,9 +236,8 @@ async def test_an_unauthenticated_search_is_401(
 
 
 async def test_an_unparseable_key_is_401_without_a_database_round_trip(
-    client: AsyncClient, app: FastAPI, configured: dict[str, Any]
+    client: AsyncClient, configured: dict[str, Any], unauthenticated: None
 ) -> None:
-    app.dependency_overrides.pop(require_key)
 
     response = await client.post(
         URL.format(UNKNOWN),

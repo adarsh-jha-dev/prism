@@ -22,7 +22,13 @@ if TYPE_CHECKING:
 
 
 class Authenticate(Protocol):
-    def __call__(self, tenant_id: UUID, *scopes: "Scope") -> "ResolvedKey": ...
+    def __call__(
+        self,
+        tenant_id: UUID,
+        *scopes: "Scope",
+        rate_limit_rpm: int = 60,
+        key_id: UUID | None = None,
+    ) -> "ResolvedKey": ...
 
 
 @pytest.fixture
@@ -98,22 +104,43 @@ def authenticate(app: FastAPI) -> "Authenticate":
     Overrides the dependency rather than issuing a real key: these tests are
     about what the routes do with a tenant, not about key resolution, which
     test_auth_integration.py covers against the table.
+
+    Metering is stubbed out with it. A test about the limiter pops that override
+    to get the real one back:
+
+        app.dependency_overrides.pop(metered_key)
     """
-    from prism.api.deps import require_key
+    from prism.api.deps import metered_key, require_key
     from prism.auth import ResolvedKey, Scope
     from prism.core.ids import uuid7
 
-    def authenticate(tenant_id: UUID, *scopes: Scope) -> ResolvedKey:
+    def authenticate(
+        tenant_id: UUID,
+        *scopes: Scope,
+        rate_limit_rpm: int = 60,
+        key_id: UUID | None = None,
+    ) -> ResolvedKey:
         key = ResolvedKey(
-            id=uuid7(),
+            id=key_id or uuid7(),
             tenant_id=tenant_id,
             scopes=frozenset(scopes or Scope),
-            rate_limit_rpm=60,
+            rate_limit_rpm=rate_limit_rpm,
         )
         app.dependency_overrides[require_key] = lambda: key
+        app.dependency_overrides[metered_key] = lambda: key
         return key
 
     return authenticate
+
+
+@pytest.fixture
+def unauthenticated(app: FastAPI) -> None:
+    """Undo the autouse authentication, both halves of it."""
+    from prism.api.deps import metered_key, require_key
+
+    app.dependency_overrides.pop(require_key, None)
+    app.dependency_overrides.pop(metered_key, None)
+    return None
 
 
 @pytest.fixture(autouse=True)
@@ -137,3 +164,12 @@ def _authenticate_route_tests(request: pytest.FixtureRequest) -> None:
         else uuid7()
     )
     authenticate(tenant_id)
+
+
+@pytest.fixture(autouse=True)
+async def _close_redis_between_tests() -> AsyncIterator[None]:
+    """A redis-py client belongs to one event loop, and each test gets its own."""
+    from prism.db import close_redis
+
+    yield
+    await close_redis()

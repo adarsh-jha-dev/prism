@@ -9,12 +9,13 @@ from hmac import compare_digest
 from typing import Annotated
 
 import structlog
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from prism.auth import AuthError, ResolvedKey, Scope, resolve_key
 from prism.config import Settings, get_settings
 from prism.embeddings import EmbeddingProvider, get_embedding_provider
+from prism.metering import RateLimiterUnavailable, RateLimitExceeded, consume, record_usage
 from prism.vision import VisionProvider, get_vision_provider
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "AdminTokenDep",
     "IngestDep",
     "KeyDep",
+    "MeteredDep",
     "ProviderDep",
     "ReadDep",
     "SettingsDep",
@@ -79,8 +81,42 @@ async def require_key(
 KeyDep = Annotated[ResolvedKey, Depends(require_key)]
 
 
+async def metered_key(key: KeyDep, request: Request) -> ResolvedKey:
+    """Count the request against the key's limit, and record it as usage.
+
+    The state is left on `request.state` for `rate_limit_headers` to attach.
+    Setting headers on an injected Response only reaches a 2xx — FastAPI builds
+    a fresh response for an HTTPException, so a 404 would carry no limit at all.
+    """
+    try:
+        state = await consume(key.id, limit=key.rate_limit_rpm)
+    except RateLimitExceeded as exc:
+        request.state.rate_limit = exc.state
+        await record_usage(key.id, key.tenant_id, throttled=True)
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"rate limit of {key.rate_limit_rpm} requests per minute exceeded",
+            headers={**exc.state.headers, "Retry-After": str(exc.state.reset_seconds)},
+        ) from exc
+    except RateLimiterUnavailable as exc:
+        # An uncounted request is refused, never granted for free.
+        log.error("rate_limiter_unavailable", error=str(exc))
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "rate limiter unavailable"
+        ) from exc
+
+    request.state.rate_limit = state
+    await record_usage(key.id, key.tenant_id)
+    return key
+
+
+MeteredDep = Annotated[ResolvedKey, Depends(metered_key)]
+
+
 def require_scope(scope: Scope) -> Callable[[ResolvedKey], Awaitable[ResolvedKey]]:
-    async def dependency(key: KeyDep) -> ResolvedKey:
+    """Scope check on a metered key — every scoped route counts against the limit."""
+
+    async def dependency(key: MeteredDep) -> ResolvedKey:
         if not key.permits(scope):
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"key lacks the {scope} scope")
         return key
