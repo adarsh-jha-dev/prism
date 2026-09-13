@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     cost_budget_usd: float = 0.0050
     latency_budget_s: float = 6.0
 
+    # Bootstraps the first tenant, which no tenant key can do. Unset by default:
+    # the tenant routes 503 rather than fall back to a weaker check.
+    admin_token: str | None = None
+
     # Unset in dev, always unset in CI.
     ollama_cloud_api_key: str | None = None
     gemini_api_key: str | None = None

@@ -5,6 +5,7 @@ can be handed a stub in a test without reaching into another module's globals.
 """
 
 from collections.abc import Awaitable, Callable
+from hmac import compare_digest
 from typing import Annotated
 
 import structlog
@@ -18,6 +19,7 @@ from prism.vision import VisionProvider, get_vision_provider
 
 __all__ = [
     "AdminDep",
+    "AdminTokenDep",
     "IngestDep",
     "KeyDep",
     "ProviderDep",
@@ -89,3 +91,24 @@ def require_scope(scope: Scope) -> Callable[[ResolvedKey], Awaitable[ResolvedKey
 ReadDep = Annotated[ResolvedKey, Depends(require_scope(Scope.READ))]
 IngestDep = Annotated[ResolvedKey, Depends(require_scope(Scope.INGEST))]
 AdminDep = Annotated[ResolvedKey, Depends(require_scope(Scope.ADMIN))]
+
+
+async def require_admin_token(
+    settings: SettingsDep,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> None:
+    """Gate the platform routes on `admin_token`.
+
+    Deliberately not a scope on an API key: every key belongs to a tenant, and
+    a tenant-scoped credential that can create other tenants is not a tenant
+    boundary. An unset token disables these routes rather than opening them.
+    """
+    if settings.admin_token is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "admin_token is not configured")
+    if credentials is None or not compare_digest(credentials.credentials, settings.admin_token):
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "invalid admin token", headers=_UNAUTHENTICATED
+        )
+
+
+AdminTokenDep = Annotated[None, Depends(require_admin_token)]

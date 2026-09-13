@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from prism import __version__
-from prism.api.routes import documents, health, search
+from prism.api.routes import collections, documents, health, search, tenants
 from prism.config import get_settings
 from prism.db import lifespan_resources
 
@@ -54,6 +54,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(health.router)
+    app.include_router(tenants.router)
+    # Before the routers that nest under /collections/{id}.
+    app.include_router(collections.router)
     app.include_router(documents.router)
     app.include_router(search.router)
     return app

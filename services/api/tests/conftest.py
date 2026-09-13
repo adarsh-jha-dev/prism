@@ -54,7 +54,7 @@ async def _throwaway_collection(name: str) -> AsyncIterator["CollectionRef"]:
     async with engine.begin() as conn:
         await conn.execute(
             text("INSERT INTO tenants (id, name) VALUES (:id, :name)"),
-            {"id": tenant_id, "name": name},
+            {"id": tenant_id, "name": f"{name}-{tenant_id}"},
         )
         await conn.execute(
             text("INSERT INTO collections (id, tenant_id, name) VALUES (:id, :tenant_id, :name)"),
@@ -107,7 +107,7 @@ def authenticate(app: FastAPI) -> "Authenticate":
         key = ResolvedKey(
             id=uuid7(),
             tenant_id=tenant_id,
-            scopes=frozenset(scopes or (Scope.READ, Scope.INGEST)),
+            scopes=frozenset(scopes or Scope),
             rate_limit_rpm=60,
         )
         app.dependency_overrides[require_key] = lambda: key
