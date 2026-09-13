@@ -26,14 +26,17 @@ from prism.db import get_engine
 __all__ = [
     "AlreadyExistsError",
     "CollectionRow",
+    "DocumentRow",
     "TenantRow",
     "create_collection",
     "create_tenant",
     "ensure_collection",
     "ensure_tenant",
     "list_collections",
+    "list_documents",
     "list_tenants",
     "read_collection",
+    "read_document",
     "read_tenant",
 ]
 
@@ -246,3 +249,82 @@ async def list_collections(
     async with (engine or get_engine()).connect() as conn:
         rows = (await conn.execute(_LIST_COLLECTIONS, {"tenant_id": tenant_id})).all()
     return [_collection(row) for row in rows]
+
+
+@dataclass(frozen=True)
+class DocumentRow:
+    id: UUID
+    collection_id: UUID
+    tenant_id: UUID
+    filename: str
+    mime_type: str
+    status: str
+    size_bytes: int | None
+    sha256: str | None
+    chunks: int
+    created_at: datetime
+    ingested_at: datetime | None
+
+
+# The chunk count is what makes a status observable rather than asserted: a
+# `ready` document with no chunks is a failure that the status word hides.
+_DOCUMENT_COLUMNS = """
+    d.id, d.collection_id, d.tenant_id, d.filename, d.mime_type, d.status,
+    d.size_bytes, d.sha256, d.created_at, d.ingested_at,
+    (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS chunks
+"""
+_LIST_DOCUMENTS = text(
+    f"SELECT {_DOCUMENT_COLUMNS} FROM documents d "
+    "WHERE d.collection_id = :collection_id AND d.tenant_id = :tenant_id "
+    "ORDER BY d.id"
+)
+_SELECT_DOCUMENT = text(
+    f"SELECT {_DOCUMENT_COLUMNS} FROM documents d "
+    "WHERE d.id = :id AND d.collection_id = :collection_id AND d.tenant_id = :tenant_id"
+)
+
+
+def _document(row: Any) -> DocumentRow:
+    return DocumentRow(
+        id=row.id,
+        collection_id=row.collection_id,
+        tenant_id=row.tenant_id,
+        filename=row.filename,
+        mime_type=row.mime_type,
+        status=row.status,
+        size_bytes=row.size_bytes,
+        sha256=row.sha256,
+        chunks=row.chunks,
+        created_at=row.created_at,
+        ingested_at=row.ingested_at,
+    )
+
+
+async def list_documents(
+    *, collection_id: UUID, tenant_id: UUID, engine: AsyncEngine | None = None
+) -> list[DocumentRow]:
+    async with (engine or get_engine()).connect() as conn:
+        rows = (
+            await conn.execute(
+                _LIST_DOCUMENTS, {"collection_id": collection_id, "tenant_id": tenant_id}
+            )
+        ).all()
+    return [_document(row) for row in rows]
+
+
+async def read_document(
+    document_id: UUID,
+    *,
+    collection_id: UUID,
+    tenant_id: UUID,
+    engine: AsyncEngine | None = None,
+) -> DocumentRow | None:
+    """None for another tenant's document, the same as for one that is absent."""
+    async with (engine or get_engine()).connect() as conn:
+        row = (
+            await conn.execute(
+                _SELECT_DOCUMENT,
+                {"id": document_id, "collection_id": collection_id, "tenant_id": tenant_id},
+            )
+        ).first()
+    return None if row is None else _document(row)

@@ -1,7 +1,11 @@
-"""Document upload.
+"""Document upload, listing and status.
 
 Ingestion runs inside the request for now, in the ordering a queue would use:
 blob written, row recorded `pending`, then ingested.
+
+The read endpoints are how ingestion becomes observable: a document that failed,
+or that is `ready` with no chunks, is visible over the API instead of only in
+the log of whoever ran the upload.
 
 Failures are classified by whose fault they are. A document this service cannot
 read is 422 and will never succeed on retry; a provider or database that is down
@@ -17,7 +21,8 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
-from prism.api.deps import IngestDep, ProviderDep, SettingsDep, VisionDep
+from prism import tenancy
+from prism.api.deps import IngestDep, ProviderDep, ReadDep, SettingsDep, VisionDep
 from prism.collections import (
     CollectionNotFoundError,
     EmbeddingModelMismatchError,
@@ -34,6 +39,7 @@ from prism.ingestion import (
     ingest_document,
 )
 from prism.storage import UploadTooLargeError, write_blob
+from prism.tenancy import DocumentRow
 from prism.vision import VisionError
 
 log = structlog.get_logger(__name__)
@@ -52,6 +58,36 @@ class DocumentUploaded(BaseModel):
     figures: int  # figure/table/equation chunks among `chunks`
     size_bytes: int
     sha256: str
+
+
+class Document(BaseModel):
+    """A document as the API reports it, including where ingestion got to."""
+
+    id: UUID
+    collection_id: UUID
+    filename: str
+    mime_type: str
+    status: str
+    chunks: int
+    size_bytes: int | None
+    sha256: str | None
+    created_at: str
+    ingested_at: str | None
+
+    @classmethod
+    def of(cls, row: DocumentRow) -> "Document":
+        return cls(
+            id=row.id,
+            collection_id=row.collection_id,
+            filename=row.filename,
+            mime_type=row.mime_type,
+            status=row.status,
+            chunks=row.chunks,
+            size_bytes=row.size_bytes,
+            sha256=row.sha256,
+            created_at=row.created_at.isoformat(),
+            ingested_at=row.ingested_at.isoformat() if row.ingested_at else None,
+        )
 
 
 def _failed(document_id: UUID, exc: Exception) -> dict[str, str]:
@@ -181,3 +217,33 @@ async def upload_document(
         size_bytes=blob.size_bytes,
         sha256=blob.sha256,
     )
+
+
+@router.get("")
+async def list_documents(collection_id: UUID, key: ReadDep) -> list[Document]:
+    """Every document in the collection, with its ingestion status.
+
+    Empty for a collection the caller does not own — the tenant is part of the
+    query, so there is no case where another tenant's documents are listed.
+    """
+    try:
+        rows = await tenancy.list_documents(collection_id=collection_id, tenant_id=key.tenant_id)
+    except SQLAlchemyError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return [Document.of(row) for row in rows]
+
+
+@router.get("/{document_id}")
+async def read_document(collection_id: UUID, document_id: UUID, key: ReadDep) -> Document:
+    """404 for another tenant's document, the same as for one that is absent."""
+    try:
+        row = await tenancy.read_document(
+            document_id, collection_id=collection_id, tenant_id=key.tenant_id
+        )
+    except SQLAlchemyError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail=f"document {document_id} does not exist"
+        )
+    return Document.of(row)
