@@ -9,6 +9,7 @@ Nothing here authorizes anything. Callers decide who may create what — the
 routes do it with `admin_token` and key scopes.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -27,22 +28,31 @@ __all__ = [
     "AlreadyExistsError",
     "CollectionRow",
     "DocumentRow",
+    "KeyRow",
+    "LastAdminKeyError",
     "TenantRow",
     "create_collection",
+    "create_key",
     "create_tenant",
     "ensure_collection",
     "ensure_tenant",
     "list_collections",
     "list_documents",
+    "list_keys",
     "list_tenants",
     "read_collection",
     "read_document",
     "read_tenant",
+    "revoke_key",
 ]
 
 
 class AlreadyExistsError(ValueError):
     """A tenant or collection with that name is already present."""
+
+
+class LastAdminKeyError(ValueError):
+    """The revoke would leave the tenant no unrevoked, non-expiring admin key."""
 
 
 @dataclass(frozen=True)
@@ -69,8 +79,9 @@ class CollectionRow:
 
 _INSERT_TENANT = text("INSERT INTO tenants (id, name) VALUES (:id, :name)")
 _INSERT_KEY = text(
-    "INSERT INTO api_keys (id, tenant_id, key_hash, name, key_prefix, scopes) "
-    "VALUES (:id, :tenant_id, :key_hash, :name, :key_prefix, CAST(:scopes AS text[]))"
+    "INSERT INTO api_keys (id, tenant_id, key_hash, name, key_prefix, scopes, expires_at) "
+    "VALUES (:id, :tenant_id, :key_hash, :name, :key_prefix, CAST(:scopes AS text[]), "
+    " :expires_at)"
 )
 _SELECT_TENANT = text("SELECT id, name, created_at FROM tenants WHERE id = :id")
 _SELECT_TENANT_BY_NAME = text("SELECT id, name, created_at FROM tenants WHERE name = :name")
@@ -124,14 +135,7 @@ async def create_tenant(
             await conn.execute(_INSERT_TENANT, {"id": tenant_id, "name": name})
             await conn.execute(
                 _INSERT_KEY,
-                {
-                    "id": uuid7(),
-                    "tenant_id": tenant_id,
-                    "key_hash": key.key_hash,
-                    "name": "initial key",
-                    "key_prefix": key.prefix,
-                    "scopes": "{" + ",".join(s.value for s in Scope) + "}",
-                },
+                _key_params(uuid7(), tenant_id, key, name="initial key", scopes=Scope),
             )
             row = (await conn.execute(_SELECT_TENANT, {"id": tenant_id})).one()
     except IntegrityError as exc:
@@ -164,6 +168,121 @@ async def read_tenant(tenant_id: UUID, *, engine: AsyncEngine | None = None) -> 
 async def list_tenants(*, engine: AsyncEngine | None = None) -> list[TenantRow]:
     async with (engine or get_engine()).connect() as conn:
         return [_tenant(row) for row in (await conn.execute(_LIST_TENANTS)).all()]
+
+
+@dataclass(frozen=True)
+class KeyRow:
+    id: UUID
+    tenant_id: UUID
+    name: str
+    key_prefix: str
+    scopes: tuple[Scope, ...]
+    created_at: datetime
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+    expires_at: datetime | None
+
+
+# key_hash is deliberately absent: nothing that reads keys back can return it.
+_KEY_COLUMNS = (
+    "id, tenant_id, name, key_prefix, scopes, created_at, last_used_at, revoked_at, expires_at"
+)
+_SELECT_KEY = text(f"SELECT {_KEY_COLUMNS} FROM api_keys WHERE id = :id AND tenant_id = :tenant_id")
+_LIST_KEYS = text(f"SELECT {_KEY_COLUMNS} FROM api_keys WHERE tenant_id = :tenant_id ORDER BY id")
+_LOCK_TENANT = text("SELECT id FROM tenants WHERE id = :id FOR NO KEY UPDATE")
+_COUNT_OTHER_PERMANENT_ADMIN_KEYS = text(
+    "SELECT count(*) FROM api_keys "
+    "WHERE tenant_id = :tenant_id AND id <> :id AND revoked_at IS NULL "
+    "AND expires_at IS NULL AND 'admin' = ANY(scopes)"
+)
+_REVOKE_KEY = text(
+    "UPDATE api_keys SET revoked_at = now() WHERE id = :id AND tenant_id = :tenant_id "
+    f"RETURNING {_KEY_COLUMNS}"
+)
+
+
+def _key(row: Any) -> KeyRow:
+    return KeyRow(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        name=row.name,
+        key_prefix=row.key_prefix,
+        scopes=tuple(Scope(s) for s in row.scopes),
+        created_at=row.created_at,
+        last_used_at=row.last_used_at,
+        revoked_at=row.revoked_at,
+        expires_at=row.expires_at,
+    )
+
+
+def _key_params(
+    key_id: UUID,
+    tenant_id: UUID,
+    key: GeneratedKey,
+    *,
+    name: str,
+    scopes: Iterable[Scope],
+    expires_at: datetime | None = None,
+) -> dict[str, Any]:
+    chosen = set(scopes)
+    return {
+        "id": key_id,
+        "tenant_id": tenant_id,
+        "key_hash": key.key_hash,
+        "name": name,
+        "key_prefix": key.prefix,
+        "scopes": "{" + ",".join(s.value for s in Scope if s in chosen) + "}",
+        "expires_at": expires_at,
+    }
+
+
+async def create_key(
+    *,
+    tenant_id: UUID,
+    name: str,
+    scopes: Iterable[Scope],
+    expires_at: datetime | None = None,
+    engine: AsyncEngine | None = None,
+) -> tuple[KeyRow, GeneratedKey]:
+    """A new key under `tenant_id`. The plaintext is on the GeneratedKey only."""
+    key_id = uuid7()
+    key = generate_key()
+    params = _key_params(key_id, tenant_id, key, name=name, scopes=scopes, expires_at=expires_at)
+    async with (engine or get_engine()).begin() as conn:
+        await conn.execute(_INSERT_KEY, params)
+        row = (await conn.execute(_SELECT_KEY, {"id": key_id, "tenant_id": tenant_id})).one()
+    return _key(row), key
+
+
+async def list_keys(*, tenant_id: UUID, engine: AsyncEngine | None = None) -> list[KeyRow]:
+    async with (engine or get_engine()).connect() as conn:
+        rows = (await conn.execute(_LIST_KEYS, {"tenant_id": tenant_id})).all()
+    return [_key(row) for row in rows]
+
+
+async def revoke_key(
+    key_id: UUID, *, tenant_id: UUID, engine: AsyncEngine | None = None
+) -> KeyRow | None:
+    """Revoke a key; an already-revoked one comes back unchanged.
+
+    None for another tenant's key, the same as for one that is absent. Raises
+    LastAdminKeyError rather than leave the tenant no permanent admin key (ADR
+    0009). The tenant row lock serializes concurrent revokes, so two cannot each
+    count the other as the survivor.
+    """
+    params = {"id": key_id, "tenant_id": tenant_id}
+    async with (engine or get_engine()).begin() as conn:
+        await conn.execute(_LOCK_TENANT, {"id": tenant_id})
+        row = (await conn.execute(_SELECT_KEY, params)).first()
+        if row is None:
+            return None
+        if row.revoked_at is not None:
+            return _key(row)
+        if row.expires_at is None and Scope.ADMIN.value in row.scopes:
+            others = (await conn.execute(_COUNT_OTHER_PERMANENT_ADMIN_KEYS, params)).scalar_one()
+            if others == 0:
+                raise LastAdminKeyError("the tenant's last non-expiring admin key")
+        return _key((await conn.execute(_REVOKE_KEY, params)).one())
 
 
 async def create_collection(
