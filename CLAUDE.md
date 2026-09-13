@@ -126,7 +126,7 @@ overspend.
    `/design-login`). Later revision than the PDFs; wins over them.
 3. `docs/design/*.pdf|png` — still the only source for the ER schema.
 
-Target numbers are **honest portfolio scale**: 30-query golden set, 72 injection
+Target numbers are **honest portfolio scale**: 31-query golden set, 72 injection
 payloads, ~612 queries/24h, −95% cost and −34% p95 vs a single-shot paid-API
 baseline, $0.00019 mean cost/query, 2.71s p95, 1/72 injections succeeding.
 Bigger numbers in the PDFs are stale — do not quote them.

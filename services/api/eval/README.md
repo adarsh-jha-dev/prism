@@ -38,6 +38,12 @@ Relevance is judged per `(document, page)` and never per chunk id — chunk ids
 are UUIDv7 minted at ingest, so they change on every re-ingest and on any change
 to `chunk_size_chars`.
 
+`quote_found` is computed against the retrieved chunks, not against the gold
+page, so it cannot tell you a label is wrong: a `false` reads identically
+whether the gold page was missed or was retrieved through a different chunk of
+that page. Labels are checked by `tests/test_eval_golden_corpus.py`, which
+matches every quote against the text of the page it is filed under.
+
 The **refusal calibration** block covers the unanswerable questions. They score
 no recall; what they measure is how high a similarity-only threshold would have
 to sit to refuse all of them, and how many clear tau today. Correct refusal is
