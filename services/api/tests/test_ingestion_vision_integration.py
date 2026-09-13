@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import text
 
 from pdf_builder import build_pdf
+from prism.collections import CollectionRef
 from prism.config import Settings
 from prism.core.ids import uuid7
 from prism.db import get_engine
@@ -38,11 +39,13 @@ async def ingest(
     collection_id: UUID,
     vision: StubVision | None,
     config: Settings | None = None,
+    collection: CollectionRef,
 ) -> tuple[UUID, int]:
     document_id = uuid7()
     await create_document(
         document_id=document_id,
         collection_id=collection_id,
+        tenant_id=collection.tenant_id,
         filename="figures.pdf",
         mime_type=PDF_MIME_TYPE,
     )
@@ -79,11 +82,13 @@ async def fetch_status(document_id: UUID) -> str | None:
     return None if row is None else str(row.status)
 
 
-async def test_a_table_page_writes_a_table_chunk(collection_id: UUID) -> None:
+async def test_a_table_page_writes_a_table_chunk(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     pdf = build_pdf([["Revenue by region"]], rules={0: 8})
 
     document_id, figures = await ingest(
-        pdf, collection_id=collection_id, vision=StubVision([TABLE])
+        pdf, collection_id=collection_id, collection=collection, vision=StubVision([TABLE])
     )
 
     assert figures == 1
@@ -95,13 +100,14 @@ async def test_a_table_page_writes_a_table_chunk(collection_id: UUID) -> None:
 
 
 async def test_the_check_constraint_accepts_every_kind_vision_produces(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     # figure/table/equation are already in chunks_chunk_type_check.
     equation = ParsedFigure(kind="equation", content=r"E = mc^2")
     document_id, _ = await ingest(
         build_pdf([["x"]], rules={0: 8}),
         collection_id=collection_id,
+        collection=collection,
         vision=StubVision([TABLE, CHART, equation]),
     )
     chunks = await fetch_chunks(document_id)
@@ -109,11 +115,14 @@ async def test_the_check_constraint_accepts_every_kind_vision_produces(
 
 
 async def test_chunk_index_runs_unbroken_across_text_and_figures(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     pdf = build_pdf([["page one"], ["page two"], ["page three"]], rules={1: 8})
     document_id, _ = await ingest(
-        pdf, collection_id=collection_id, vision=StubVision([TABLE, CHART])
+        pdf,
+        collection_id=collection_id,
+        collection=collection,
+        vision=StubVision([TABLE, CHART]),
     )
 
     chunks = await fetch_chunks(document_id)
@@ -127,10 +136,13 @@ async def test_chunk_index_runs_unbroken_across_text_and_figures(
     ]
 
 
-async def test_a_figure_chunk_records_that_a_model_wrote_it(collection_id: UUID) -> None:
+async def test_a_figure_chunk_records_that_a_model_wrote_it(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     document_id, _ = await ingest(
         build_pdf([["x"]], rules={0: 8}),
         collection_id=collection_id,
+        collection=collection,
         vision=StubVision([TABLE]),
     )
     text_chunk, table = await fetch_chunks(document_id)
@@ -144,10 +156,13 @@ async def test_a_figure_chunk_records_that_a_model_wrote_it(collection_id: UUID)
     assert text_chunk["metadata"] == {"chunk_index": 0}
 
 
-async def test_figure_chunks_are_embedded_like_any_other(collection_id: UUID) -> None:
+async def test_figure_chunks_are_embedded_like_any_other(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     document_id, _ = await ingest(
         build_pdf([["x"]], rules={0: 8}),
         collection_id=collection_id,
+        collection=collection,
         vision=StubVision([TABLE]),
     )
     async with get_engine().connect() as conn:
@@ -160,11 +175,14 @@ async def test_figure_chunks_are_embedded_like_any_other(collection_id: UUID) ->
     assert missing == 0
 
 
-async def test_vision_off_is_exactly_the_text_pipeline(collection_id: UUID) -> None:
+async def test_vision_off_is_exactly_the_text_pipeline(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     vision = StubVision([TABLE])
     document_id, figures = await ingest(
         build_pdf([["x"]], rules={0: 8}),
         collection_id=collection_id,
+        collection=collection,
         vision=vision,
         config=settings(vision_enabled=False),
     )
@@ -174,21 +192,27 @@ async def test_vision_off_is_exactly_the_text_pipeline(collection_id: UUID) -> N
     assert [c["chunk_type"] for c in chunks] == ["text"]
 
 
-async def test_a_prose_document_never_reaches_the_provider(collection_id: UUID) -> None:
+async def test_a_prose_document_never_reaches_the_provider(
+    collection_id: UUID, collection: CollectionRef
+) -> None:
     vision = StubVision([TABLE])
     _, figures = await ingest(
-        build_pdf([["just words here"]]), collection_id=collection_id, vision=vision
+        build_pdf([["just words here"]]),
+        collection_id=collection_id,
+        collection=collection,
+        vision=vision,
     )
     assert (vision.calls, figures) == (0, 0)
 
 
 async def test_a_vision_failure_fails_the_document_and_writes_no_chunks(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     document_id = uuid7()
     await create_document(
         document_id=document_id,
         collection_id=collection_id,
+        tenant_id=collection.tenant_id,
         filename="figures.pdf",
         mime_type=PDF_MIME_TYPE,
     )
@@ -207,13 +231,14 @@ async def test_a_vision_failure_fails_the_document_and_writes_no_chunks(
 
 
 async def test_a_failed_document_can_be_ingested_again_once_vision_recovers(
-    collection_id: UUID,
+    collection_id: UUID, collection: CollectionRef
 ) -> None:
     document_id = uuid7()
     pdf = build_pdf([["Table 1"]], rules={0: 8})
     await create_document(
         document_id=document_id,
         collection_id=collection_id,
+        tenant_id=collection.tenant_id,
         filename="figures.pdf",
         mime_type=PDF_MIME_TYPE,
     )

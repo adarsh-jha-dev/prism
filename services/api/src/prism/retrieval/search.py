@@ -3,9 +3,14 @@
 Vector only, and it grades nothing. Hybrid BM25 belongs to the graph's
 `retrieve` node; this is the baseline the benchmark measures against.
 
-The collection scope is a predicate inside the ANN query, never a filter over
-its results — a neighbour from another collection must not occupy a top-k slot,
-and at this layer that predicate is the whole of tenant isolation.
+Scope is a predicate inside the ANN query, never a filter over its results — a
+neighbour from another collection or another tenant must not occupy a top-k
+slot. Both columns are denormalized onto `chunks` so the predicate sits in the
+chunks scan rather than on a joined table, and composite foreign keys stop
+either of them disagreeing with the parent row (migration 0004).
+
+Passing `collection_id` without `tenant_id` was the isolation bug: any caller
+holding a collection UUID read that collection.
 
 The HNSW knobs are insurance, not something currently doing work: at the sizes
 measured so far the planner prefers the `collection_id` btree and an exact
@@ -40,6 +45,7 @@ _SEARCH = text(
     FROM chunks c
     JOIN documents d ON d.id = c.document_id
     WHERE c.collection_id = :collection_id
+      AND c.tenant_id = :tenant_id
       AND c.embedding IS NOT NULL
     ORDER BY c.embedding <=> CAST(:query_vector AS vector)
     LIMIT :k
@@ -68,6 +74,7 @@ class SearchHit:
 async def search_chunks(
     query: str,
     *,
+    tenant_id: UUID,
     collection_id: UUID,
     k: int | None = None,
     provider: EmbeddingProvider | None = None,
@@ -75,6 +82,10 @@ async def search_chunks(
     engine: AsyncEngine | None = None,
 ) -> list[SearchHit]:
     """The k nearest chunks in `collection_id`, most similar first.
+
+    `tenant_id` is the caller's, resolved from their API key — never taken from
+    the request. A collection owned by another tenant raises
+    CollectionNotFoundError, the same as one that does not exist.
 
     Raises CollectionNotFoundError or EmbeddingModelMismatchError before
     embedding anything, and EmbeddingError if the query cannot be embedded. An
@@ -92,7 +103,7 @@ async def search_chunks(
         raise ValueError("query is empty")
 
     async with engine.connect() as conn:
-        await assert_compatible(conn, collection_id, provider)
+        await assert_compatible(conn, collection_id, provider, tenant_id=tenant_id)
 
     query_vector = await provider.embed_one(query)
 
@@ -110,6 +121,7 @@ async def search_chunks(
                 {
                     "query_vector": str(query_vector),
                     "collection_id": collection_id,
+                    "tenant_id": tenant_id,
                     "k": k,
                 },
             )

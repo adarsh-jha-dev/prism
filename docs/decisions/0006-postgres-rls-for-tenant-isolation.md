@@ -1,6 +1,6 @@
 # 0006 — Postgres RLS for tenant isolation
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-09-13
 - **Relates to:** [0001](0001-phase-0-schema-scope.md)
 
@@ -115,7 +115,7 @@ The case against RLS as a *mechanism* is strong. The case against it as a
 exact bug now sitting in `search_chunks`, which is the best evidence available
 that the first layer is not sufficient on its own.
 
-## Consequences if accepted
+## Consequences
 
 - Step 7's tenant scoping is written to be correct on its own, not as a
   placeholder for RLS.
@@ -126,11 +126,11 @@ that the first layer is not sufficient on its own.
 - Tests gain a case asserting that a query issued with *no* tenant predicate
   still returns nothing across tenants — the assertion only RLS can satisfy.
 
-## Consequences if rejected
+Step 2 landed with the step-7 security fix rather than after it: the predicate
+needed a column to name, so migration 0004 denormalizes `tenant_id` onto
+`documents` and `chunks` with composite foreign keys against
+`collections (id, tenant_id)` and `documents (id, tenant_id)`. A row whose
+`tenant_id` disagrees with its parent is now rejected by the database, so the
+column the isolation predicate reads cannot drift.
 
-- Isolation stays application-level indefinitely. Every new query path is a
-  place to forget the predicate, and the only defence is review.
-- The eventual graph nodes, the semantic cache and the benchmark harness each
-  reach the tables directly and each carry that risk independently.
-- REVIEW.md's gap stays open and should be closed explicitly as "decided
-  against" rather than left as an unanswered question.
+Step 3 — the policies, the GUC and the bypass role — remains outstanding.

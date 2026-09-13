@@ -68,14 +68,19 @@ log = structlog.get_logger(__name__)
 
 PDF_MIME_TYPE = "application/pdf"
 
+# INSERT ... SELECT: the row is written only if the collection exists AND belongs
+# to the caller, and tenant_id is copied from it rather than supplied. Ownership
+# is part of the write, so there is no window between checking and inserting.
 _INSERT_DOCUMENT = text(
     "INSERT INTO documents "
-    "(id, collection_id, filename, mime_type, status, storage_path, size_bytes, sha256) "
-    "VALUES (:id, :collection_id, :filename, :mime_type, 'pending', "
-    ":storage_path, :size_bytes, :sha256)"
+    "(id, collection_id, tenant_id, filename, mime_type, status, storage_path, "
+    " size_bytes, sha256) "
+    "SELECT :id, c.id, c.tenant_id, :filename, :mime_type, 'pending', "
+    "       :storage_path, :size_bytes, :sha256 "
+    "FROM collections c WHERE c.id = :collection_id AND c.tenant_id = :tenant_id"
 )
 _SELECT_DOCUMENT = text(
-    "SELECT collection_id, filename, mime_type, status FROM documents WHERE id = :id"
+    "SELECT collection_id, tenant_id, filename, mime_type, status FROM documents WHERE id = :id"
 )
 # Conditional, so the claim is the check: two workers cannot both ingest one
 # document and double its chunks.
@@ -84,9 +89,10 @@ _CLAIM_DOCUMENT = text(
 )
 _INSERT_CHUNK = text(
     "INSERT INTO chunks "
-    "(id, document_id, collection_id, content, chunk_type, page_number, embedding, metadata) "
-    "VALUES (:id, :document_id, :collection_id, :content, :chunk_type, :page_number, "
-    "CAST(:embedding AS vector), CAST(:metadata AS jsonb))"
+    "(id, document_id, collection_id, tenant_id, content, chunk_type, page_number, "
+    " embedding, metadata) "
+    "VALUES (:id, :document_id, :collection_id, :tenant_id, :content, :chunk_type, "
+    ":page_number, CAST(:embedding AS vector), CAST(:metadata AS jsonb))"
 )
 _MARK_READY = text("UPDATE documents SET status = 'ready', ingested_at = now() WHERE id = :id")
 _MARK_FAILED = text("UPDATE documents SET status = 'failed' WHERE id = :id")
@@ -220,6 +226,7 @@ async def create_document(
     *,
     document_id: UUID,
     collection_id: UUID,
+    tenant_id: UUID,
     filename: str,
     mime_type: str,
     storage_path: str | None = None,
@@ -232,23 +239,32 @@ async def create_document(
     The id is the caller's because the blob is written first and named after it:
     a crash then leaves an unreferenced file rather than a row whose bytes never
     arrived.
+
+    A collection owned by another tenant raises CollectionNotFoundError, the
+    same as one that does not exist.
     """
     try:
         async with (engine or get_engine()).begin() as conn:
-            await conn.execute(
-                _INSERT_DOCUMENT,
-                {
-                    "id": document_id,
-                    "collection_id": collection_id,
-                    "filename": filename,
-                    "mime_type": mime_type,
-                    "storage_path": storage_path,
-                    "size_bytes": size_bytes,
-                    "sha256": sha256,
-                },
-            )
+            written = (
+                await conn.execute(
+                    _INSERT_DOCUMENT,
+                    {
+                        "id": document_id,
+                        "collection_id": collection_id,
+                        "tenant_id": tenant_id,
+                        "filename": filename,
+                        "mime_type": mime_type,
+                        "storage_path": storage_path,
+                        "size_bytes": size_bytes,
+                        "sha256": sha256,
+                    },
+                )
+            ).rowcount
     except IntegrityError as exc:
         raise CollectionNotFoundError(f"collection {collection_id} does not exist") from exc
+
+    if written != 1:
+        raise CollectionNotFoundError(f"collection {collection_id} does not exist")
 
 
 async def ingest_document(
@@ -283,7 +299,9 @@ async def ingest_document(
             raise IngestionError(
                 f"unsupported mime type {document.mime_type!r}, expected {PDF_MIME_TYPE!r}"
             )
-        await assert_compatible(conn, document.collection_id, provider)
+        await assert_compatible(
+            conn, document.collection_id, provider, tenant_id=document.tenant_id
+        )
         if (await conn.execute(_CLAIM_DOCUMENT, {"id": document_id})).rowcount != 1:
             raise IngestionError(
                 f"document {document_id} is {document.status}, not pending — refusing to "
@@ -291,6 +309,7 @@ async def ingest_document(
             )
 
     collection_id: UUID = document.collection_id
+    tenant_id: UUID = document.tenant_id
     try:
         pages = extract_pages(source)
         figures: dict[int, list[ParsedFigure]] = {}
@@ -313,6 +332,7 @@ async def ingest_document(
                         "id": uuid7(),
                         "document_id": document_id,
                         "collection_id": collection_id,
+                        "tenant_id": tenant_id,
                         "content": chunk.content,
                         "chunk_type": chunk.chunk_type,
                         "page_number": chunk.page_number,

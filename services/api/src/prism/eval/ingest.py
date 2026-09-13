@@ -24,6 +24,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from prism.collections import CollectionRef
 from prism.config import Settings, get_settings
 from prism.core.ids import uuid7
 from prism.db import get_engine
@@ -40,7 +41,7 @@ _READ_CHUNK_BYTES = 1024 * 1024
 _SELECT_TENANT = text("SELECT id FROM tenants WHERE name = :name")
 _INSERT_TENANT = text("INSERT INTO tenants (id, name) VALUES (:id, :name)")
 _SELECT_COLLECTION = text(
-    "SELECT id FROM collections WHERE tenant_id = :tenant_id AND name = :name"
+    "SELECT id, tenant_id FROM collections WHERE tenant_id = :tenant_id AND name = :name"
 )
 _INSERT_COLLECTION = text(
     "INSERT INTO collections (id, tenant_id, name, embedding_model, embedding_dim) "
@@ -89,8 +90,8 @@ def _verify(document: CorpusDocument, corpus_dir: Path) -> Path:
 
 async def _ensure_collection(
     name: str, *, tenant: str, provider: EmbeddingProvider, engine: AsyncEngine
-) -> UUID:
-    """The collection id, creating the tenant and collection if they are absent."""
+) -> CollectionRef:
+    """The collection, creating the tenant and collection if they are absent."""
     async with engine.begin() as conn:
         row = (await conn.execute(_SELECT_TENANT, {"name": tenant})).first()
         if row is None:
@@ -109,12 +110,8 @@ async def _ensure_collection(
                 "dim": provider.dim,
             },
         )
-        collection_id: UUID = (
-            (await conn.execute(_SELECT_COLLECTION, {"tenant_id": tenant_id, "name": name}))
-            .one()
-            .id
-        )
-    return collection_id
+        row = (await conn.execute(_SELECT_COLLECTION, {"tenant_id": tenant_id, "name": name})).one()
+    return CollectionRef(tenant_id=row.tenant_id, collection_id=row.id)
 
 
 async def ingest_corpus(
@@ -138,9 +135,8 @@ async def ingest_corpus(
     engine = engine or get_engine()
 
     paths = {document.filename: _verify(document, corpus_dir) for document in corpus.documents}
-    collection_id = await _ensure_collection(
-        collection, tenant=tenant, provider=provider, engine=engine
-    )
+    ref = await _ensure_collection(collection, tenant=tenant, provider=provider, engine=engine)
+    collection_id = ref.collection_id
 
     ingested: list[str] = []
     skipped: list[str] = []
@@ -165,6 +161,7 @@ async def ingest_corpus(
             await create_document(
                 document_id=document_id,
                 collection_id=collection_id,
+                tenant_id=ref.tenant_id,
                 filename=document.filename,
                 mime_type=PDF_MIME_TYPE,
                 size_bytes=path.stat().st_size,

@@ -17,7 +17,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
-from prism.api.deps import ProviderDep, SettingsDep, VisionDep
+from prism.api.deps import IngestDep, ProviderDep, SettingsDep, VisionDep
 from prism.collections import (
     CollectionNotFoundError,
     EmbeddingModelMismatchError,
@@ -66,6 +66,7 @@ def _failed(document_id: UUID, exc: Exception) -> dict[str, str]:
 async def upload_document(
     request: Request,
     collection_id: UUID,
+    key: IngestDep,
     provider: ProviderDep,
     vision: VisionDep,
     settings: SettingsDep,
@@ -90,7 +91,7 @@ async def upload_document(
 
     # Before the bytes land, so a refusal here leaves neither a blob nor a row.
     try:
-        await assert_collection_compatible(collection_id, provider)
+        await assert_collection_compatible(collection_id, provider, tenant_id=key.tenant_id)
     except CollectionNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except EmbeddingModelMismatchError as exc:
@@ -123,6 +124,7 @@ async def upload_document(
         await create_document(
             document_id=document_id,
             collection_id=collection_id,
+            tenant_id=key.tenant_id,
             filename=filename,
             mime_type=PDF_MIME_TYPE,
             storage_path=blob.storage_path,

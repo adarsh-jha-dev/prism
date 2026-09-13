@@ -17,6 +17,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from prism.collections import CollectionRef
 from prism.config import Settings, get_settings
 from prism.db import get_engine
 from prism.embeddings import EmbeddingProvider, get_embedding_provider
@@ -36,7 +37,7 @@ _WHITESPACE = re.compile(r"\s+")
 
 _SELECT_COLLECTION_BY_NAME = text(
     """
-    SELECT c.id
+    SELECT c.id, c.tenant_id
     FROM collections c
     JOIN tenants t ON t.id = c.tenant_id
     WHERE c.name = :name AND t.name = :tenant
@@ -65,8 +66,10 @@ class CorpusStats:
     unembedded: int
 
 
-async def resolve_collection(name: str, *, tenant: str, engine: AsyncEngine | None = None) -> UUID:
-    """The id of the collection the golden set is written against."""
+async def resolve_collection(
+    name: str, *, tenant: str, engine: AsyncEngine | None = None
+) -> CollectionRef:
+    """The collection the golden set is written against, with its owning tenant."""
     async with (engine or get_engine()).connect() as conn:
         row = (
             await conn.execute(_SELECT_COLLECTION_BY_NAME, {"name": name, "tenant": tenant})
@@ -75,8 +78,7 @@ async def resolve_collection(name: str, *, tenant: str, engine: AsyncEngine | No
         raise CollectionNotResolvedError(
             f"no collection {name!r} under tenant {tenant!r} — run `make eval-ingest` first"
         )
-    collection_id: UUID = row.id
-    return collection_id
+    return CollectionRef(tenant_id=row.tenant_id, collection_id=row.id)
 
 
 async def collection_stats(
@@ -125,7 +127,7 @@ def _to_result(question: GoldenQuestion, hits: list[SearchHit]) -> QuestionResul
 async def run_golden_set(
     golden: GoldenSet,
     *,
-    collection_id: UUID,
+    collection: CollectionRef,
     k: int,
     provider: EmbeddingProvider | None = None,
     settings: Settings | None = None,
@@ -140,7 +142,8 @@ async def run_golden_set(
         async with limit:
             hits = await search_chunks(
                 question.question,
-                collection_id=collection_id,
+                tenant_id=collection.tenant_id,
+                collection_id=collection.collection_id,
                 k=k,
                 provider=provider,
                 settings=settings,
