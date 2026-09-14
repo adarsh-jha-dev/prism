@@ -57,6 +57,10 @@ There is also no `providers` or `model_pricing` table anywhere. `cost_usd` is a
 computed number with no recorded price basis; when prices change, historical
 comparisons stop being reproducible and cannot be recomputed.
 
+RESOLVED: `billing_unit`/`gpu_ms` per trace row (ADR 0012), priced from an
+effective-dated append-only `model_pricing` with the price row recorded on the
+trace (ADR 0013). $0 is a price; unpriced is null and loud.
+
 ### B5. The headline benchmark has no data model
 "Naive baseline vs optimized, p95 and cost-per-query under concurrent load" is
 the deliverable, and the Cost & performance screen has a panel for it (-51.5%,
@@ -103,10 +107,14 @@ ephemeral chunks. Neither is designed.
 - No write-cache node exists anywhere in the graph. The cache is read but never
   populated. Open decision: **are refusals cached?** It saves money and locks in
   a wrong abstention.
+  RESOLVED: refusals are not cached (ADR 0012). The write-cache node, and the
+  scoping and invalidation columns below, are still open.
 - `CACHE_ENTRIES` missing `embedding_model` (a model swap silently poisons the
   cache), `expires_at`, an invalidation link to document versions, and the
   citations — a cached answer returned without citations breaks the "every claim
-  carries a citation" promise.
+  carries a citation" promise. PARTLY RESOLVED: a cache entry is an answer with
+  its citations, enforced by `queries.citation_count` (ADR 0012); the scoping,
+  `embedding_model` and invalidation columns remain open.
 - `hit_count` alone cannot produce the "48.6% cache hit rate" chart; that needs
   hit events with timestamps, or a rollup, plus miss counts from `QUERIES`.
 
@@ -119,6 +127,13 @@ ephemeral chunks. Neither is designed.
   `generate` produce no verdict.
 - Highest-volume table in the system, with no partitioning or retention plan.
 
+RESOLVED, whole section: ADR 0012. Universal `status` plus a grading-only
+`verdict`, `started_at` with `sequence` to break clock ties, `attempt`,
+`input_json`/`output_json` holding references rather than copies, `error`. Not
+partitioned yet — `started_at NOT NULL` from the first migration and no inbound
+foreign key keep it cheap; retention drops traces with their checkpoints and
+exempts eval and benchmark runs.
+
 **Queries**
 - `was_refused boolean` cannot express three terminal states plus two refusal
   causes. Needs `status` + `refusal_reason`.
@@ -130,6 +145,11 @@ ephemeral chunks. Neither is designed.
   `thread_id`; a nullable per-trace `checkpoint_ref` is not enough to replay or
   fork a whole query.
 
+RESOLVED, whole section: ADR 0012. `status` and `refusal_reason` tied by a CHECK
+equivalence, `cache_entry_id` likewise, two independent attempt counters with no
+policy constant in the schema, `thread_id` unique, and `numeric(14,8)` — 6dp
+rounds a cheap node row to zero and then the rows stop summing to the total.
+
 **Retrieval**
 - "Hybrid BM25 + HNSW" has no full-text column — no `tsvector`, no GIN index.
   Postgres FTS is `ts_rank`/`ts_rank_cd`, **not** BM25. Either adopt ParadeDB /
@@ -137,11 +157,14 @@ ephemeral chunks. Neither is designed.
   RESOLVED: Postgres FTS, and nothing says BM25. See ADR 0010.
 - No fusion (RRF) configuration. RESOLVED: RRF, `k = 60`, ranks only (ADR 0010).
 - `rerank` appears in mockups and the eval commit log but is absent from the flow
-  diagram and the schema.
+  diagram and the schema. RESOLVED: in the graph per CLAUDE.md, and in-process as
+  an int8 cross-encoder per ADR 0011.
 
 **Multimodal and citations**
 - `QUERY_CITATIONS` has no character offsets, but the Query console highlights
-  specific sentences inside a chunk.
+  specific sentences inside a chunk. STILL OPEN, deliberately: ADR 0012 shapes
+  the table so offsets arrive as two nullable columns against `cited_content`,
+  additive and without a backfill.
 - No bounding-box storage, despite "the parsed bounding box for a table or
   figure". `CHUNKS.metadata jsonb` could hold it but nothing specifies the shape.
 
