@@ -16,6 +16,7 @@ from prism.eval.golden import GoldenSetError, load_corpus, load_golden_set
 from prism.eval.ingest import CorpusError, ingest_corpus
 from prism.eval.report import build_report, render_json, render_text
 from prism.eval.runner import (
+    RETRIEVERS,
     CollectionNotResolvedError,
     collection_stats,
     resolve_collection,
@@ -46,6 +47,12 @@ def _parser() -> argparse.ArgumentParser:
         "recall", parents=[common], help="run the golden set and report recall@k"
     )
     recall.add_argument("-k", "--at", type=int, nargs="+", default=list(DEFAULT_KS), dest="ks")
+    recall.add_argument(
+        "--retriever",
+        choices=RETRIEVERS,
+        default="hybrid",
+        help="hybrid is the graph's retrieve node; vector is the naive baseline",
+    )
     recall.add_argument("--json", type=Path, default=None, help="also write the run as JSON")
     recall.add_argument(
         "--fail-under",
@@ -91,13 +98,16 @@ async def _recall(args: argparse.Namespace) -> int:
 
     settings = get_settings()
     ref = await resolve_collection(golden.collection, tenant=args.tenant)
-    results = await run_golden_set(golden, collection=ref, k=max(ks), settings=settings)
+    results = await run_golden_set(
+        golden, collection=ref, k=max(ks), retriever=args.retriever, settings=settings
+    )
     report = build_report(
         golden=golden,
         results=results,
         stats=await collection_stats(ref.collection_id),
         settings=settings,
         ks=ks,
+        retriever=args.retriever,
     )
 
     print(render_text(report))

@@ -22,7 +22,7 @@ from prism.eval.metrics import (
     summarize_answerable,
     summarize_unanswerable,
 )
-from prism.eval.runner import CorpusStats
+from prism.eval.runner import CorpusStats, Retriever
 
 __all__ = ["Report", "build_report", "render_json", "render_text"]
 
@@ -38,7 +38,9 @@ class Report:
         stats: CorpusStats,
         settings: Settings,
         ks: Sequence[int],
+        retriever: Retriever,
     ) -> None:
+        self.retriever = retriever
         self.golden = golden
         self.results = tuple(results)
         self.stats = stats
@@ -59,8 +61,16 @@ def build_report(
     stats: CorpusStats,
     settings: Settings,
     ks: Sequence[int],
+    retriever: Retriever,
 ) -> Report:
-    return Report(golden=golden, results=results, stats=stats, settings=settings, ks=ks)
+    return Report(
+        golden=golden,
+        results=results,
+        stats=stats,
+        settings=settings,
+        ks=ks,
+        retriever=retriever,
+    )
 
 
 def _pct(value: float) -> str:
@@ -86,6 +96,13 @@ def render_text(report: Report) -> str:
     lines.append(
         f"Chunking     {settings.chunk_size_chars} chars, {settings.chunk_overlap_chars} overlap"
     )
+    if report.retriever == "hybrid":
+        lines.append(
+            f"Retriever    hybrid — FTS + vector, RRF k={settings.rrf_k}, "
+            f"{settings.retrieval_candidate_k} candidates per half"
+        )
+    else:
+        lines.append("Retriever    vector only — the naive baseline")
     if report.stats.unembedded:
         lines.append(
             f"WARNING      {report.stats.unembedded} chunks have no vector "
@@ -113,6 +130,9 @@ def render_text(report: Report) -> str:
     calibration = report.unanswerable
     if calibration.questions:
         lines.append(f"Refusal calibration — {calibration.questions} unanswerable questions")
+        if calibration.max_score is None:
+            lines.append("  no top-1 similarity: fusion yields an ordering, not a score.")
+            lines.append("  groundedness is verify_grounding's call, never retrieval's.")
         if calibration.max_score is not None and calibration.mean_score is not None:
             lines.append(
                 f"  top-1 similarity   max {calibration.max_score:.3f}   "
@@ -176,9 +196,11 @@ def _question_payload(result: QuestionResult, ks: Sequence[int]) -> dict[str, An
 def render_json(report: Report) -> str:
     settings = report.settings
     payload: dict[str, Any] = {
-        "schema": 1,
+        # 2 added `retriever`. A schema-1 report predates hybrid and is vector.
+        "schema": 2,
         "run": {
             "collection": report.golden.collection,
+            "retriever": report.retriever,
             "documents": report.stats.documents,
             "chunks": report.stats.chunks,
             "embedding_model": settings.embedding_model,

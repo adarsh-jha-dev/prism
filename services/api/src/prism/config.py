@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # The HNSW knobs bind only if the planner picks that index over the
     # collection_id btree; see prism.retrieval.search.
     retrieval_top_k: int = 10
+    # Each half retrieves this deep before fusion, so a chunk one half ranks
+    # well survives the other half missing it entirely.
+    retrieval_candidate_k: int = 30
+    # RRF consumes ranks, never scores; see ADR 0010.
+    rrf_k: int = 60
     hnsw_ef_search: int = 64
     hnsw_iterative_scan: Literal["off", "strict_order", "relaxed_order"] = "strict_order"
 

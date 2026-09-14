@@ -1,5 +1,14 @@
 """Run the golden set against retrieval.
 
+Either retriever, chosen per run: `vector` is the naive baseline the benchmark
+measures against, `hybrid` is the graph's `retrieve` node. Which one ran is
+recorded in the report, because a recall number compared across the two is not a
+comparison of anything.
+
+The hybrid retriever reports no scores. Fusion yields an ordering and no
+magnitude (ADR 0010), so a hybrid run has no top-1 similarity and its refusal
+calibration is empty rather than zero — see `eval/README.md`.
+
 Calls `prism.retrieval.search_chunks` directly rather than the HTTP endpoint:
 the number being measured is the retriever's, and a local ASGI hop would add
 latency that belongs to neither the baseline nor the optimized path.
@@ -11,7 +20,9 @@ one index produce byte-identical reports.
 
 import asyncio
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal, Protocol
 from uuid import UUID
 
 from sqlalchemy import text
@@ -23,15 +34,38 @@ from prism.db import get_engine
 from prism.embeddings import EmbeddingProvider, get_embedding_provider
 from prism.eval.golden import GoldenQuestion, GoldenSet, PageRef
 from prism.eval.metrics import QuestionResult
-from prism.retrieval import SearchHit, search_chunks
+from prism.retrieval import search_chunks
+from prism.retrieval.hybrid import hybrid_search
 
 __all__ = [
+    "RETRIEVERS",
     "CollectionNotResolvedError",
     "CorpusStats",
+    "Retriever",
     "collection_stats",
     "resolve_collection",
     "run_golden_set",
 ]
+
+Retriever = Literal["vector", "hybrid"]
+RETRIEVERS: tuple[Retriever, ...] = ("vector", "hybrid")
+
+
+class _Hit(Protocol):
+    """What both retrievers agree on. Scores are not in it, because one has none.
+
+    Read-only properties, so the frozen result dataclasses satisfy it.
+    """
+
+    @property
+    def filename(self) -> str: ...
+
+    @property
+    def content(self) -> str: ...
+
+    @property
+    def page_number(self) -> int | None: ...
+
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -93,7 +127,7 @@ def _normalize(value: str) -> str:
     return _WHITESPACE.sub(" ", value).strip().casefold()
 
 
-def _quote_found(quote: str | None, hits: list[SearchHit]) -> bool | None:
+def _quote_found(quote: str | None, hits: Sequence[_Hit]) -> bool | None:
     """Whether the supporting quote survives into a retrieved chunk.
 
     Reported as a diagnostic, never folded into recall: a quote can straddle a
@@ -106,7 +140,9 @@ def _quote_found(quote: str | None, hits: list[SearchHit]) -> bool | None:
     return any(needle in _normalize(hit.content) for hit in hits)
 
 
-def _to_result(question: GoldenQuestion, hits: list[SearchHit]) -> QuestionResult:
+def _to_result(
+    question: GoldenQuestion, hits: Sequence[_Hit], *, scores: tuple[float, ...]
+) -> QuestionResult:
     pages = tuple(
         PageRef(doc=hit.filename, page=hit.page_number)
         for hit in hits
@@ -118,7 +154,7 @@ def _to_result(question: GoldenQuestion, hits: list[SearchHit]) -> QuestionResul
         unanswerable=question.unanswerable,
         relevant=question.relevant,
         retrieved=pages,
-        scores=tuple(hit.score for hit in hits),
+        scores=scores,
         quote_found=_quote_found(question.supporting_quote, hits),
         unmappable_chunks=sum(1 for hit in hits if hit.page_number is None),
     )
@@ -129,6 +165,7 @@ async def run_golden_set(
     *,
     collection: CollectionRef,
     k: int,
+    retriever: Retriever = "vector",
     provider: EmbeddingProvider | None = None,
     settings: Settings | None = None,
     engine: AsyncEngine | None = None,
@@ -140,6 +177,19 @@ async def run_golden_set(
 
     async def one(question: GoldenQuestion) -> QuestionResult:
         async with limit:
+            if retriever == "hybrid":
+                fused = await hybrid_search(
+                    question.question,
+                    tenant_id=collection.tenant_id,
+                    collection_id=collection.collection_id,
+                    k=k,
+                    provider=provider,
+                    settings=settings,
+                    engine=engine,
+                )
+                # No scores: a fused rank is an ordering, never a magnitude.
+                return _to_result(question, fused, scores=())
+
             hits = await search_chunks(
                 question.question,
                 tenant_id=collection.tenant_id,
@@ -149,6 +199,6 @@ async def run_golden_set(
                 settings=settings,
                 engine=engine,
             )
-        return _to_result(question, hits)
+        return _to_result(question, hits, scores=tuple(hit.score for hit in hits))
 
     return tuple(await asyncio.gather(*(one(q) for q in golden.questions)))
