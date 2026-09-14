@@ -140,16 +140,18 @@ Bigger numbers in the PDFs are stale — do not quote them.
 
 ## Open design gaps — do not build over these
 
-`docs/design/REVIEW.md` holds the list: cache scoping columns, provider/model/
-pricing tables (so `cost_usd` has no price basis), the benchmark's data model,
-`GOLDEN_QUESTIONS.is_unanswerable`, and citation character offsets.
+`docs/design/REVIEW.md` holds the list: cache scoping columns, the benchmark's
+data model, `GOLDEN_QUESTIONS.is_unanswerable`, and citation character offsets.
 
 Closed by the design revision — **do not re-raise**: `abstain` exists; web
 search is gone; `plan_query`, `embed_query`, `rerank` are in the graph; graders
 are local; the roster is the four providers; retry canon is 3.
 
-Closed by ADR — **do not re-raise**: the lexical half is Postgres FTS, not
-BM25, and nothing user-visible may claim BM25 (ADR 0010).
+Closed by ADR — **do not re-raise**: the lexical half is Postgres FTS, not BM25,
+and nothing user-visible may claim BM25 (ADR 0010); rerank is an in-process int8
+cross-encoder (0011); the query/trace/citation model, its partitioning stance and
+"refusals are not cached" (0012); `cost_usd` has a price basis in an
+effective-dated `model_pricing` (0013).
 
 ## Working agreements
 

@@ -71,7 +71,7 @@ windows and tokens cannot express it; `none` covers the in-process nodes, which
 cost nothing and still take time (ADR 0011).
 
 `cost_usd` stays **derived and advisory** until the provider/model/pricing tables
-exist — that gap is still open in `CLAUDE.md` and this ADR does not close it. The
+exist — that gap was still open when this was written, and ADR 0013 closes it. The
 metered columns are the ground truth, and the reason they matter is that a priced
 number cannot be recomputed after a price change while a meter reading can. A
 benchmark whose cost figure cannot be re-derived is not reproducible.
@@ -227,9 +227,9 @@ highest-volume tables in the system.
 - Storing `question` and `final_answer` puts user text and injection payloads in a
   table the dashboard reads. Retention is the only control over that, which is one
   more reason the horizon is a setting rather than a hardcode.
-- Not closed here, and not built over: the provider/model/pricing tables, the
-  cache's scoping columns, the benchmark's data model,
-  `GOLDEN_QUESTIONS.is_unanswerable`, and citation character offsets. The
+- Not closed here, and not built over: the cache's scoping columns, the
+  benchmark's data model, `GOLDEN_QUESTIONS.is_unanswerable`, and citation
+  character offsets. The
   citations table is shaped so offsets arrive as two nullable columns against
   `cited_content`, additive and without a backfill.
 - Refusals re-running the graph makes refusal latency a real p95 contributor
