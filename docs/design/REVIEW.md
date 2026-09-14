@@ -134,7 +134,8 @@ ephemeral chunks. Neither is designed.
 - "Hybrid BM25 + HNSW" has no full-text column — no `tsvector`, no GIN index.
   Postgres FTS is `ts_rank`/`ts_rank_cd`, **not** BM25. Either adopt ParadeDB /
   `pg_search`, or stop claiming BM25 in the UI copy.
-- No fusion (RRF) configuration.
+  RESOLVED: Postgres FTS, and nothing says BM25. See ADR 0010.
+- No fusion (RRF) configuration. RESOLVED: RRF, `k = 60`, ranks only (ADR 0010).
 - `rerank` appears in mockups and the eval commit log but is absent from the flow
   diagram and the schema.
 

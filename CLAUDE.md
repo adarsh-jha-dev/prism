@@ -41,7 +41,7 @@ query
   -> semantic cache check      (scoped by collection; hit => END: cached)
   -> plan_query
   -> embed_query
-  -> retrieve                  hybrid BM25 + HNSW over pgvector
+  -> retrieve                  hybrid Postgres FTS + HNSW, fused by RRF
   -> grade_docs
        pass -> rerank
        fail -> rewrite_query, retry retrieval
@@ -142,12 +142,14 @@ Bigger numbers in the PDFs are stale — do not quote them.
 
 `docs/design/REVIEW.md` holds the list: cache scoping columns, provider/model/
 pricing tables (so `cost_usd` has no price basis), the benchmark's data model,
-`GOLDEN_QUESTIONS.is_unanswerable`, BM25 vs Postgres FTS, and citation character
-offsets.
+`GOLDEN_QUESTIONS.is_unanswerable`, and citation character offsets.
 
 Closed by the design revision — **do not re-raise**: `abstain` exists; web
 search is gone; `plan_query`, `embed_query`, `rerank` are in the graph; graders
 are local; the roster is the four providers; retry canon is 3.
+
+Closed by ADR — **do not re-raise**: the lexical half is Postgres FTS, not
+BM25, and nothing user-visible may claim BM25 (ADR 0010).
 
 ## Working agreements
 
