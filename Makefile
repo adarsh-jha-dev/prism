@@ -5,7 +5,7 @@ WEB_DIR := apps/web
 
 .DEFAULT_GOAL := help
 .PHONY: help up down logs api web install test test-all test-ci lint fmt migrate revision \
-	eval eval-ingest record-fixtures
+	eval eval-ingest eval-vector record-fixtures
 
 help: ## List targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -48,8 +48,11 @@ record-fixtures: ## Re-record paid-provider cassettes (local only, needs real ke
 eval-ingest: ## Ingest the eval corpus into its collection (needs `make up` + Ollama)
 	cd $(API_DIR) && uv run python -m prism.eval ingest
 
-eval: ## Golden set vs naive retrieval — recall@k (needs `make eval-ingest`)
+eval: ## Golden set vs hybrid retrieval — recall@k (needs `make eval-ingest`)
 	cd $(API_DIR) && uv run python -m prism.eval recall --json eval/runs/latest.json
+
+eval-vector: ## Same golden set against the naive baseline retriever
+	cd $(API_DIR) && uv run python -m prism.eval recall --retriever vector --json eval/runs/vector.json
 
 lint: ## ruff + mypy + tsc
 	cd $(API_DIR) && uv run ruff check . && uv run ruff format --check . && uv run mypy

@@ -82,7 +82,28 @@ def test_run_block_matches_the_committed_set(
 
 def test_records_what_makes_a_run_comparable(baseline: dict[str, Any]) -> None:
     # Changing any of these voids the comparison, so a baseline must carry them.
-    assert baseline["schema"] == 1
+    assert baseline["schema"] in (1, 2)
     for field in ("embedding_model", "embedding_dim", "chunk_size_chars", "chunk_overlap_chars"):
         assert baseline["run"][field] is not None
     assert "query_prefix" in baseline["run"]
+
+
+def test_schema_2_names_its_retriever(baseline: dict[str, Any]) -> None:
+    """Recall is not comparable across retrievers, so a run has to say which ran.
+
+    Schema 1 predates the hybrid retriever and is vector-only by construction.
+    """
+    if baseline["schema"] < 2:
+        assert "retriever" not in baseline["run"]
+        return
+    assert baseline["run"]["retriever"] in ("vector", "hybrid")
+
+
+def test_a_hybrid_baseline_reports_no_similarity_calibration(baseline: dict[str, Any]) -> None:
+    """ADR 0010: fusion yields an ordering. A score here would mean one leaked."""
+    if baseline["run"].get("retriever") != "hybrid":
+        return
+    calibration = baseline["refusal_calibration"]
+    assert calibration["max_score"] is None
+    assert calibration["above_threshold"] == 0
+    assert all(q["top_score"] is None for q in baseline["questions"])
