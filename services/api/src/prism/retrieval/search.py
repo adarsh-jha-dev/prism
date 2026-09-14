@@ -1,7 +1,8 @@
 """Naive retrieval: top-k cosine over one collection's chunks.
 
-Vector only, and it grades nothing. Hybrid BM25 belongs to the graph's
-`retrieve` node; this is the baseline the benchmark measures against.
+Vector only, and it grades nothing. The hybrid lexical+vector path belongs to
+the graph's `retrieve` node (ADR 0010); this is the baseline the benchmark
+measures against, and it stays vector-only.
 
 Scope is a predicate inside the ANN query, never a filter over its results — a
 neighbour from another collection or another tenant must not occupy a top-k
