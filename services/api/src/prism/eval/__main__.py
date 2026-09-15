@@ -1,7 +1,8 @@
 """`python -m prism.eval ingest` and `python -m prism.eval recall`.
 
 Both are dev entry points and both talk to the local stack. Neither can reach a
-paid provider: retrieval embeds on the `ollama` lane and nothing here generates.
+paid provider: retrieval embeds on the `ollama` lane, rerank runs in-process, and
+nothing here generates.
 """
 
 import argparse
@@ -22,6 +23,7 @@ from prism.eval.runner import (
     resolve_collection,
     run_golden_set,
 )
+from prism.rerank import RerankError, get_reranker
 
 DEFAULT_TENANT = "eval"
 DEFAULT_KS = (1, 3, 5, 10)
@@ -50,8 +52,8 @@ def _parser() -> argparse.ArgumentParser:
     recall.add_argument(
         "--retriever",
         choices=RETRIEVERS,
-        default="hybrid",
-        help="hybrid is the graph's retrieve node; vector is the naive baseline",
+        default="rerank",
+        help="rerank is retrieve then rerank; hybrid is retrieve alone; vector is the baseline",
     )
     recall.add_argument("--json", type=Path, default=None, help="also write the run as JSON")
     recall.add_argument(
@@ -98,8 +100,17 @@ async def _recall(args: argparse.Namespace) -> int:
 
     settings = get_settings()
     ref = await resolve_collection(golden.collection, tenant=args.tenant)
+    reranker = None
+    if args.retriever == "rerank":
+        reranker = get_reranker()
+        await reranker.load()
     results = await run_golden_set(
-        golden, collection=ref, k=max(ks), retriever=args.retriever, settings=settings
+        golden,
+        collection=ref,
+        k=max(ks),
+        retriever=args.retriever,
+        reranker=reranker,
+        settings=settings,
     )
     report = build_report(
         golden=golden,
@@ -134,6 +145,9 @@ async def _run(args: argparse.Namespace) -> int:
         return await _recall(args)
     except (GoldenSetError, CorpusError, CollectionNotResolvedError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    except RerankError as exc:
+        print(f"RerankError: {exc}", file=sys.stderr)
         return 2
     except EmbeddingError as exc:
         print(f"{exc}\nIs Ollama running with the embedding model pulled?", file=sys.stderr)

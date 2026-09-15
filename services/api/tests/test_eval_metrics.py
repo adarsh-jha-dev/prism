@@ -5,10 +5,12 @@ import pytest
 from prism.eval.golden import PageRef
 from prism.eval.metrics import (
     QuestionResult,
+    above_floor,
     hit_at_k,
     recall_at_k,
     reciprocal_rank,
     summarize_answerable,
+    summarize_floor,
     summarize_unanswerable,
 )
 
@@ -149,3 +151,42 @@ class TestSummarizeUnanswerable:
         summary = summarize_unanswerable([result(relevant=frozenset({A1}))], threshold=0.58)
         assert summary.questions == 0
         assert summary.above_threshold == 0
+
+
+class TestAboveFloor:
+    def test_keeps_the_prefix_at_or_above_the_floor(self) -> None:
+        kept = above_floor(result(retrieved=(A1, A2, A3), scores=(0.9, 0.44, 0.2)), floor=0.44)
+        assert kept.retrieved == (A1, A2)
+        assert kept.scores == (0.9, 0.44)
+
+    def test_can_leave_nothing(self) -> None:
+        kept = above_floor(result(retrieved=(A1,), scores=(0.1,)), floor=0.44)
+        assert kept.retrieved == () and kept.top_score is None
+
+    def test_rejects_results_without_a_score_per_chunk(self) -> None:
+        unscored = QuestionResult(
+            question_id="gq-x",
+            question="q",
+            unanswerable=False,
+            relevant=frozenset({A1}),
+            retrieved=(A1,),
+            scores=(),
+            quote_found=None,
+            unmappable_chunks=0,
+        )
+        with pytest.raises(ValueError, match="one score per retrieved chunk"):
+            above_floor(unscored, floor=0.44)
+
+
+class TestSummarizeFloor:
+    def test_counts_emptied_questions_per_class(self) -> None:
+        results = [
+            result(relevant=frozenset({A1}), retrieved=(A1,), scores=(0.9,)),
+            result(relevant=frozenset({A1}), retrieved=(A1,), scores=(0.3,)),
+            result(unanswerable=True, retrieved=(B1,), scores=(0.1,)),
+            result(unanswerable=True, retrieved=(B1,), scores=(0.5,)),
+            result(unanswerable=True),
+        ]
+        summary = summarize_floor(results, floor=0.44)
+        assert (summary.answerable, summary.answerable_emptied) == (2, 1)
+        assert (summary.unanswerable, summary.unanswerable_emptied) == (3, 2)

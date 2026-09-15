@@ -75,10 +75,25 @@ class Settings(BaseSettings):
     generator_model: str = "qwen2.5:32b"  # generate, before escalation
     reranker_model: str = "bge-reranker-v2-m3"  # in-process
 
+    # rerank_score_floor is calibrated against this revision and quantization;
+    # changing either re-opens it (ADR 0011).
+    reranker_repo: str = "onnx-community/bge-reranker-v2-m3-ONNX"
+    reranker_revision: str = "6f5ff65298512715a1e669753bc754d2bc8f367b"
+    reranker_quantization: Literal["int8"] = "int8"
+    reranker_dir: Path = Path("var/models")
+    # Fused candidates scored per query. Latency grows linearly with it.
+    rerank_candidate_k: int = 30
+    rerank_batch_size: int = 16
+    rerank_max_tokens: int = 512
+    # One forward pass already uses every core; a second only queues on them.
+    rerank_concurrency: int = 1
+    rerank_timeout_s: float = 3.0
+
     # Correction-loop policy. max_attempts is total attempts per loop, and the
     # two loops count independently.
     abstention_threshold: float = 0.58
     max_attempts: int = 3
+    # Applies to the reranker's sigmoid, never its raw logit.
     rerank_score_floor: float = 0.44
 
     # Per-query budgets for the cost-aware router. No eligible provider under

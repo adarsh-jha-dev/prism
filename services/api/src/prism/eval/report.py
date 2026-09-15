@@ -15,11 +15,14 @@ from prism.config import Settings
 from prism.eval.golden import GoldenSet
 from prism.eval.metrics import (
     AnswerableSummary,
+    FloorSummary,
     QuestionResult,
     UnanswerableSummary,
+    above_floor,
     hit_at_k,
     recall_at_k,
     summarize_answerable,
+    summarize_floor,
     summarize_unanswerable,
 )
 from prism.eval.runner import CorpusStats, Retriever
@@ -42,16 +45,30 @@ class Report:
     ) -> None:
         self.retriever = retriever
         self.golden = golden
-        self.results = tuple(results)
         self.stats = stats
         self.settings = settings
         self.ks = tuple(ks)
+        self.unfloored = tuple(results)
+        self.ordering: tuple[AnswerableSummary, ...] = ()
+        self.floor: FloorSummary | None = None
+
+        if retriever == "rerank":
+            # Recall is scored on what the floor keeps, since that is all
+            # generation sees; the ordering alone is reported beside it.
+            floor = settings.rerank_score_floor
+            self.results = tuple(above_floor(r, floor) for r in results)
+            self.ordering = tuple(summarize_answerable(self.unfloored, k) for k in self.ks)
+            self.floor = summarize_floor(self.unfloored, floor)
+            # A rerank score is compared with the floor, never with tau.
+            threshold = floor
+        else:
+            self.results = self.unfloored
+            threshold = settings.abstention_threshold
+
         self.answerable: tuple[AnswerableSummary, ...] = tuple(
             summarize_answerable(self.results, k) for k in self.ks
         )
-        self.unanswerable: UnanswerableSummary = summarize_unanswerable(
-            self.results, settings.abstention_threshold
-        )
+        self.unanswerable: UnanswerableSummary = summarize_unanswerable(self.unfloored, threshold)
 
 
 def build_report(
@@ -96,7 +113,14 @@ def render_text(report: Report) -> str:
     lines.append(
         f"Chunking     {settings.chunk_size_chars} chars, {settings.chunk_overlap_chars} overlap"
     )
-    if report.retriever == "hybrid":
+    if report.retriever == "rerank":
+        lines.append(
+            f"Retriever    hybrid, then {settings.reranker_model} "
+            f"({settings.reranker_quantization} @ {settings.reranker_revision[:8]}), "
+            f"{settings.rerank_candidate_k} fused candidates, "
+            f"floor {settings.rerank_score_floor:.2f}"
+        )
+    elif report.retriever == "hybrid":
         lines.append(
             f"Retriever    hybrid — FTS + vector, RRF k={settings.rrf_k}, "
             f"{settings.retrieval_candidate_k} candidates per half"
@@ -122,12 +146,33 @@ def render_text(report: Report) -> str:
     # Reported once, not per row: rank of the first relevant chunk does not
     # depend on k, so a per-k column would repeat one number and read as a bug.
     lines.append(f"  MRR@{largest_k} {report.answerable[-1].mrr:.3f}")
+    if report.ordering:
+        ordering = report.ordering[-1]
+        lines.append(
+            f"  before the floor: recall@{largest_k} {_pct(ordering.recall)}   "
+            f"hit@{largest_k} {_pct(ordering.hit_rate)}   MRR {ordering.mrr:.3f}"
+        )
     lines.append("  recall@k counts every relevant page found; hit@k counts finding any one.")
     lines.append("  ceiling is the best recall@k reachable — a question with more relevant")
     lines.append("  pages than k cannot reach 1.0 however good the ranking.")
     lines.append("")
 
+    if report.floor is not None:
+        gate = report.floor
+        lines.append(f"Rerank floor {gate.floor:.2f} — questions with no candidate above it")
+        lines.append(
+            f"  answerable     {gate.answerable_emptied} of {gate.answerable}   "
+            "would re-enter the retrieval loop"
+        )
+        lines.append(
+            f"  unanswerable   {gate.unanswerable_emptied} of {gate.unanswerable}   "
+            "refused before generation"
+        )
+        lines.append("")
+
     calibration = report.unanswerable
+    unit = "rerank score" if report.retriever == "rerank" else "similarity"
+    gate_name = "floor" if report.retriever == "rerank" else "tau"
     if calibration.questions:
         lines.append(f"Refusal calibration — {calibration.questions} unanswerable questions")
         if calibration.max_score is None:
@@ -135,16 +180,16 @@ def render_text(report: Report) -> str:
             lines.append("  groundedness is verify_grounding's call, never retrieval's.")
         if calibration.max_score is not None and calibration.mean_score is not None:
             lines.append(
-                f"  top-1 similarity   max {calibration.max_score:.3f}   "
+                f"  top-1 {unit}   max {calibration.max_score:.3f}   "
                 f"mean {calibration.mean_score:.3f}   min {calibration.min_score:.3f}"
             )
         lines.append(
-            f"  at tau={calibration.threshold:.2f}, {calibration.above_threshold} of "
+            f"  at {gate_name}={calibration.threshold:.2f}, {calibration.above_threshold} of "
             f"{calibration.questions} retrieve evidence that scores as answerable"
         )
         if calibration.max_score is not None:
             lines.append(
-                f"  a similarity-only threshold would have to exceed "
+                f"  a {unit}-only threshold would have to exceed "
                 f"{calibration.max_score:.3f} to refuse all {calibration.questions}"
             )
         lines.append("")
@@ -178,12 +223,15 @@ def render_text(report: Report) -> str:
     return "\n".join(lines)
 
 
-def _question_payload(result: QuestionResult, ks: Sequence[int]) -> dict[str, Any]:
+def _question_payload(
+    result: QuestionResult, unfloored: QuestionResult, ks: Sequence[int]
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "id": result.question_id,
         "unanswerable": result.unanswerable,
         "retrieved": [str(page) for page in result.retrieved],
-        "top_score": result.top_score,
+        # The best candidate's, whether or not a floor kept it.
+        "top_score": unfloored.top_score,
         "quote_found": result.quote_found,
     }
     if not result.unanswerable:
@@ -196,8 +244,8 @@ def _question_payload(result: QuestionResult, ks: Sequence[int]) -> dict[str, An
 def render_json(report: Report) -> str:
     settings = report.settings
     payload: dict[str, Any] = {
-        # 2 added `retriever`. A schema-1 report predates hybrid and is vector.
-        "schema": 2,
+        # 2 added `retriever`; 3 added the rerank retriever and its blocks.
+        "schema": 3,
         "run": {
             "collection": report.golden.collection,
             "retriever": report.retriever,
@@ -231,6 +279,27 @@ def render_json(report: Report) -> str:
             "mean_score": report.unanswerable.mean_score,
             "min_score": report.unanswerable.min_score,
         },
-        "questions": [_question_payload(r, report.ks) for r in report.results],
+        "questions": [
+            _question_payload(r, u, report.ks)
+            for r, u in zip(report.results, report.unfloored, strict=True)
+        ],
     }
+    if report.floor is not None:
+        payload["run"]["rerank"] = {
+            "model": settings.reranker_model,
+            "revision": settings.reranker_revision,
+            "quantization": settings.reranker_quantization,
+            "candidate_k": settings.rerank_candidate_k,
+            "max_tokens": settings.rerank_max_tokens,
+            "score_floor": report.floor.floor,
+        }
+        payload["ordering"] = [
+            {"k": s.k, "recall_at_k": s.recall, "hit_at_k": s.hit_rate, "mrr": s.mrr}
+            for s in report.ordering
+        ]
+        payload["rerank_floor"] = {
+            "floor": report.floor.floor,
+            "answerable_emptied": report.floor.answerable_emptied,
+            "unanswerable_emptied": report.floor.unanswerable_emptied,
+        }
     return json.dumps(payload, indent=2, sort_keys=False)

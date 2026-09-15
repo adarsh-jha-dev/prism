@@ -19,6 +19,9 @@ dependencies = [
     "python-multipart>=0.0.20",
     "pyyaml>=6.0",
     "pypdfium2>=5.13.0",
+    "onnxruntime>=1.20",
+    "tokenizers>=0.21",
+    "numpy>=2.0",
 ]
 
 [dependency-groups]
@@ -62,6 +65,11 @@ packages = ["prism"]
 module = ["pypdfium2.*"]
 ignore_missing_imports = true
 
+# onnxruntime ships no py.typed. Confined to prism.rerank.onnx.
+[[tool.mypy.overrides]]
+module = ["onnxruntime.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
@@ -69,4 +77,5 @@ addopts = "-q --strict-markers"
 markers = [
     "integration: requires docker compose services (deselect with -m 'not integration')",
     "ollama: additionally requires a local Ollama with the embedding and vision models pulled",
+    "reranker: requires the reranker weights (`make reranker-fetch`)",
 ]

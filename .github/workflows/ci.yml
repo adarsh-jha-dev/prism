@@ -66,9 +66,9 @@ jobs:
         run: uv run alembic upgrade head
 
       # No Ollama here, so /health/deps reports it down. Nothing asserts otherwise,
-      # and tests needing a live model are deselected — see the `ollama` marker.
+      # and tests needing a live model or its weights are deselected.
       - name: Test
-        run: uv run pytest -m "not ollama"
+        run: uv run pytest -m "not ollama and not reranker"
 
   web:
     name: web — types, build

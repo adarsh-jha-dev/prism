@@ -82,7 +82,7 @@ def test_run_block_matches_the_committed_set(
 
 def test_records_what_makes_a_run_comparable(baseline: dict[str, Any]) -> None:
     # Changing any of these voids the comparison, so a baseline must carry them.
-    assert baseline["schema"] in (1, 2)
+    assert baseline["schema"] in (1, 2, 3)
     for field in ("embedding_model", "embedding_dim", "chunk_size_chars", "chunk_overlap_chars"):
         assert baseline["run"][field] is not None
     assert "query_prefix" in baseline["run"]
@@ -96,7 +96,7 @@ def test_schema_2_names_its_retriever(baseline: dict[str, Any]) -> None:
     if baseline["schema"] < 2:
         assert "retriever" not in baseline["run"]
         return
-    assert baseline["run"]["retriever"] in ("vector", "hybrid")
+    assert baseline["run"]["retriever"] in ("vector", "hybrid", "rerank")
 
 
 def test_a_hybrid_baseline_reports_no_similarity_calibration(baseline: dict[str, Any]) -> None:
@@ -107,3 +107,19 @@ def test_a_hybrid_baseline_reports_no_similarity_calibration(baseline: dict[str,
     assert calibration["max_score"] is None
     assert calibration["above_threshold"] == 0
     assert all(q["top_score"] is None for q in baseline["questions"])
+
+
+def test_a_rerank_baseline_is_calibrated_against_the_floor(baseline: dict[str, Any]) -> None:
+    """The floor is only meaningful for one revision and quantization (ADR 0011).
+
+    And a rerank score is compared with the floor, never with tau.
+    """
+    if baseline["run"].get("retriever") != "rerank":
+        return
+    rerank = baseline["run"]["rerank"]
+    for field in ("model", "revision", "quantization", "candidate_k", "score_floor"):
+        assert rerank[field] is not None, field
+    assert baseline["refusal_calibration"]["threshold"] == rerank["score_floor"]
+    assert baseline["rerank_floor"]["floor"] == rerank["score_floor"]
+    scores = [q["top_score"] for q in baseline["questions"] if q["top_score"] is not None]
+    assert scores and all(0.0 <= s <= 1.0 for s in scores), "a raw logit leaked in"

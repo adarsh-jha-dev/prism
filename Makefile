@@ -5,7 +5,7 @@ WEB_DIR := apps/web
 
 .DEFAULT_GOAL := help
 .PHONY: help up down logs api web install test test-all test-ci lint fmt migrate revision \
-	eval eval-ingest eval-vector record-fixtures
+	eval eval-ingest eval-hybrid eval-vector reranker-fetch record-fixtures
 
 help: ## List targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -36,11 +36,11 @@ web: ## Run the Next.js dev server
 test: ## Unit tests — no network, no database, no paid call
 	cd $(API_DIR) && uv run pytest -m "not integration"
 
-test-all: ## Unit + integration tests (needs `make up` and a local Ollama)
+test-all: ## Unit + integration tests (needs `make up`, a local Ollama, `make reranker-fetch`)
 	cd $(API_DIR) && uv run pytest
 
 test-ci: ## Exactly what CI runs — no live model
-	cd $(API_DIR) && uv run pytest -m "not ollama"
+	cd $(API_DIR) && uv run pytest -m "not ollama and not reranker"
 
 record-fixtures: ## Re-record paid-provider cassettes (local only, needs real keys)
 	cd $(API_DIR) && uv run python ../../scripts/record_fixtures.py $(names)
@@ -48,8 +48,14 @@ record-fixtures: ## Re-record paid-provider cassettes (local only, needs real ke
 eval-ingest: ## Ingest the eval corpus into its collection (needs `make up` + Ollama)
 	cd $(API_DIR) && uv run python -m prism.eval ingest
 
-eval: ## Golden set vs hybrid retrieval — recall@k (needs `make eval-ingest`)
+reranker-fetch: ## Download the pinned reranker weights into var/models (~570MB)
+	cd $(API_DIR) && uv run python -m prism.rerank fetch
+
+eval: ## Golden set vs hybrid retrieval + rerank (needs `make eval-ingest`, `make reranker-fetch`)
 	cd $(API_DIR) && uv run python -m prism.eval recall --json eval/runs/latest.json
+
+eval-hybrid: ## Same golden set against hybrid retrieval without rerank
+	cd $(API_DIR) && uv run python -m prism.eval recall --retriever hybrid --json eval/runs/hybrid.json
 
 eval-vector: ## Same golden set against the naive baseline retriever
 	cd $(API_DIR) && uv run python -m prism.eval recall --retriever vector --json eval/runs/vector.json

@@ -1,13 +1,16 @@
 """Run the golden set against retrieval.
 
-Either retriever, chosen per run: `vector` is the naive baseline the benchmark
-measures against, `hybrid` is the graph's `retrieve` node. Which one ran is
-recorded in the report, because a recall number compared across the two is not a
-comparison of anything.
+One retriever per run: `vector` is the naive baseline the benchmark measures
+against, `hybrid` is the graph's `retrieve` node, and `rerank` is `retrieve`
+followed by `rerank`. Which one ran is recorded in the report, because a recall
+number compared across them is not a comparison of anything.
 
 The hybrid retriever reports no scores. Fusion yields an ordering and no
 magnitude (ADR 0010), so a hybrid run has no top-1 similarity and its refusal
-calibration is empty rather than zero — see `eval/README.md`.
+calibration is empty rather than zero — see `eval/README.md`. A rerank run
+reports the cross-encoder's scores for its top k *before* the floor, so the
+report can separate what the ordering achieved from what the floor removed. Any
+RerankError fails the run: a query that skipped rerank is not a data point.
 
 Calls `prism.retrieval.search_chunks` directly rather than the HTTP endpoint:
 the number being measured is the retriever's, and a local ASGI hop would add
@@ -34,8 +37,10 @@ from prism.db import get_engine
 from prism.embeddings import EmbeddingProvider, get_embedding_provider
 from prism.eval.golden import GoldenQuestion, GoldenSet, PageRef
 from prism.eval.metrics import QuestionResult
+from prism.rerank import Reranker
 from prism.retrieval import search_chunks
 from prism.retrieval.hybrid import hybrid_search
+from prism.retrieval.rerank import rerank
 
 __all__ = [
     "RETRIEVERS",
@@ -47,8 +52,8 @@ __all__ = [
     "run_golden_set",
 ]
 
-Retriever = Literal["vector", "hybrid"]
-RETRIEVERS: tuple[Retriever, ...] = ("vector", "hybrid")
+Retriever = Literal["vector", "hybrid", "rerank"]
+RETRIEVERS: tuple[Retriever, ...] = ("vector", "hybrid", "rerank")
 
 
 class _Hit(Protocol):
@@ -141,21 +146,31 @@ def _quote_found(quote: str | None, hits: Sequence[_Hit]) -> bool | None:
 
 
 def _to_result(
-    question: GoldenQuestion, hits: Sequence[_Hit], *, scores: tuple[float, ...]
+    question: GoldenQuestion,
+    hits: Sequence[_Hit],
+    *,
+    scores: Sequence[float],
+    quoted_from: Sequence[_Hit] | None = None,
 ) -> QuestionResult:
-    pages = tuple(
-        PageRef(doc=hit.filename, page=hit.page_number)
-        for hit in hits
-        if hit.page_number is not None
-    )
+    if scores and len(scores) != len(hits):
+        raise ValueError("scores must be empty or one per hit")
+    pages: list[PageRef] = []
+    kept: list[float] = []
+    for i, hit in enumerate(hits):
+        if hit.page_number is not None:
+            pages.append(PageRef(doc=hit.filename, page=hit.page_number))
+            if scores:
+                kept.append(scores[i])
     return QuestionResult(
         question_id=question.id,
         question=question.question,
         unanswerable=question.unanswerable,
         relevant=question.relevant,
-        retrieved=pages,
-        scores=scores,
-        quote_found=_quote_found(question.supporting_quote, hits),
+        retrieved=tuple(pages),
+        scores=tuple(kept),
+        quote_found=_quote_found(
+            question.supporting_quote, hits if quoted_from is None else quoted_from
+        ),
         unmappable_chunks=sum(1 for hit in hits if hit.page_number is None),
     )
 
@@ -167,6 +182,7 @@ async def run_golden_set(
     k: int,
     retriever: Retriever = "vector",
     provider: EmbeddingProvider | None = None,
+    reranker: Reranker | None = None,
     settings: Settings | None = None,
     engine: AsyncEngine | None = None,
 ) -> tuple[QuestionResult, ...]:
@@ -176,9 +192,9 @@ async def run_golden_set(
     limit = asyncio.Semaphore(settings.concurrency_ollama_local)
 
     async def one(question: GoldenQuestion) -> QuestionResult:
-        async with limit:
-            if retriever == "hybrid":
-                fused = await hybrid_search(
+        if retriever == "vector":
+            async with limit:
+                hits = await search_chunks(
                     question.question,
                     tenant_id=collection.tenant_id,
                     collection_id=collection.collection_id,
@@ -187,18 +203,29 @@ async def run_golden_set(
                     settings=settings,
                     engine=engine,
                 )
-                # No scores: a fused rank is an ordering, never a magnitude.
-                return _to_result(question, fused, scores=())
+            return _to_result(question, hits, scores=[hit.score for hit in hits])
 
-            hits = await search_chunks(
+        async with limit:
+            fused = await hybrid_search(
                 question.question,
                 tenant_id=collection.tenant_id,
                 collection_id=collection.collection_id,
-                k=k,
+                k=k if retriever == "hybrid" else max(k, settings.rerank_candidate_k),
                 provider=provider,
                 settings=settings,
                 engine=engine,
             )
-        return _to_result(question, hits, scores=tuple(hit.score for hit in hits))
+        if retriever == "hybrid":
+            # No scores: a fused rank is an ordering, never a magnitude.
+            return _to_result(question, fused, scores=[])
+
+        # Outside the ollama lane's cap: rerank queues on its own semaphore.
+        reranked = await rerank(question.question, fused, k=k, reranker=reranker, settings=settings)
+        return _to_result(
+            question,
+            reranked.ranked,
+            scores=[hit.score for hit in reranked.ranked],
+            quoted_from=reranked.hits,
+        )
 
     return tuple(await asyncio.gather(*(one(q) for q in golden.questions)))

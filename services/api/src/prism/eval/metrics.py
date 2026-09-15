@@ -12,19 +12,22 @@ slots, because that is what they cost at retrieval time.
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import fmean
 
 from prism.eval.golden import PageRef
 
 __all__ = [
     "AnswerableSummary",
+    "FloorSummary",
     "QuestionResult",
     "UnanswerableSummary",
+    "above_floor",
     "hit_at_k",
     "recall_at_k",
     "reciprocal_rank",
     "summarize_answerable",
+    "summarize_floor",
     "summarize_unanswerable",
 ]
 
@@ -135,4 +138,42 @@ def summarize_unanswerable(
         max_score=max(tops) if tops else None,
         mean_score=fmean(tops) if tops else None,
         min_score=min(tops) if tops else None,
+    )
+
+
+def above_floor(result: QuestionResult, floor: float) -> QuestionResult:
+    """What a score floor keeps. Scores are best-first, so that is a prefix."""
+    if len(result.scores) != len(result.retrieved):
+        raise ValueError("a floor needs one score per retrieved chunk")
+    kept = sum(1 for score in result.scores if score >= floor)
+    return replace(result, retrieved=result.retrieved[:kept], scores=result.scores[:kept])
+
+
+@dataclass(frozen=True)
+class FloorSummary:
+    """Questions whose every candidate fell below the floor, by class.
+
+    An emptied answerable question re-enters the retrieval loop for nothing; an
+    emptied unanswerable one is refused before any generation is paid for.
+    """
+
+    floor: float
+    answerable: int
+    answerable_emptied: int
+    unanswerable: int
+    unanswerable_emptied: int
+
+
+def summarize_floor(results: Sequence[QuestionResult], floor: float) -> FloorSummary:
+    def emptied(group: list[QuestionResult]) -> int:
+        return sum(1 for r in group if r.top_score is None or r.top_score < floor)
+
+    answerable = [r for r in results if not r.unanswerable]
+    unanswerable = [r for r in results if r.unanswerable]
+    return FloorSummary(
+        floor=floor,
+        answerable=len(answerable),
+        answerable_emptied=emptied(answerable),
+        unanswerable=len(unanswerable),
+        unanswerable_emptied=emptied(unanswerable),
     )
