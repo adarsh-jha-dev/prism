@@ -72,7 +72,11 @@ class Settings(BaseSettings):
 
     planner_model: str = "qwen2.5:14b"  # plan_query, rewrite_query
     grader_model: str = "llama3.1:8b"  # grade_docs, verify_grounding
-    generator_model: str = "qwen2.5:32b"  # generate, before escalation
+    # generate, before escalation — and what a chat call uses when it names no model
+    generator_model: str = "qwen2.5:32b"
+    # A ceiling on a hung call, not a budget: the router enforces
+    # latency_budget_s, and a 32b local generation legitimately exceeds it.
+    chat_timeout_s: float = 60.0
     reranker_model: str = "bge-reranker-v2-m3"  # in-process
 
     # rerank_score_floor is calibrated against this revision and quantization;

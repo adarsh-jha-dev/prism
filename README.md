@@ -49,6 +49,12 @@ are exercised through the record/replay fixtures in
 `services/api/tests/fixtures/` — re-recorded locally with `make record-fixtures`.
 A test that reaches a paid endpoint is a bug.
 
+Generation and the graders run locally, so the graph needs its models pulled:
+
+    ollama pull qwen2.5:32b      # generate
+    ollama pull llama3.1:8b      # grade_docs, verify_grounding
+    ollama pull qwen2.5:14b      # plan_query, rewrite_query
+
 Ingestion also parses figures and tables with a vision model (`VISION_ENABLED`).
 The default lane is local and free and needs the model pulled:
 
