@@ -81,8 +81,9 @@ class Settings(BaseSettings):
     reranker_revision: str = "6f5ff65298512715a1e669753bc754d2bc8f367b"
     reranker_quantization: Literal["int8"] = "int8"
     reranker_dir: Path = Path("var/models")
-    # Fused candidates scored per query. Latency grows linearly with it.
-    rerank_candidate_k: int = 30
+    # Fused candidates scored per query, at roughly 0.2s each on CPU: 30 would
+    # spend the whole latency budget on rerank alone (eval/README.md).
+    rerank_candidate_k: int = 10
     rerank_batch_size: int = 16
     rerank_max_tokens: int = 512
     # One forward pass already uses every core; a second only queues on them.

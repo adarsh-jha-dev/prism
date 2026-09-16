@@ -4,13 +4,20 @@ Retrieval quality against the naive retriever, measured **before** the
 correction loop exists. That number is what makes Phase 2's contribution a
 measurement rather than an assertion.
 
+    make reranker-fetch # download the pinned reranker weights (~570MB, once)
     make eval-ingest    # verify the corpus, ingest it into `prism-eval`
-    make eval           # run the golden set against hybrid retrieval
+    make eval           # the golden set against retrieve + rerank
+    make eval-hybrid    # the same set against retrieval alone
     make eval-vector    # the same set against the naive baseline retriever
 
-Both need `make up` and a local Ollama with `nomic-embed-text` pulled. Neither
-can reach a paid provider: retrieval embeds on the `ollama` lane and nothing
-here generates.
+All need `make up` and a local Ollama with `nomic-embed-text` pulled. None can
+reach a paid provider: retrieval embeds on the `ollama` lane, rerank runs
+in-process, and nothing here generates.
+
+`make eval` runs 31 questions through one reranker slot, so the per-query
+`rerank_timeout_s` is a batch's queue wait rather than a query's latency. Raise
+it for a run (`RERANK_TIMEOUT_S=600`) — a timeout mid-run fails the run rather
+than scoring a query that skipped rerank.
 
 ## Files
 
@@ -100,6 +107,7 @@ invalidates every earlier run.
 |---|---|---|---|---|---|
 | `runs/baseline-2026-09-11.json` | 2026-09-11 | vector (schema 1) | 0.68 | 0.461 | Naive retrieval, before any correction loop. 31 questions, 482 chunks over 7 documents. |
 | `runs/baseline-2026-09-14-hybrid.json` | 2026-09-14 | hybrid | 0.68 | 0.461 | Hybrid FTS + vector, RRF k=60. **Identical to the vector baseline at every k** — see below. |
+| `runs/baseline-2026-09-16-rerank.json` | 2026-09-16 | rerank | 0.36 | 0.360 | Rerank over 10 fused candidates, floor 0.44. Recall **after** the floor; the ordering alone reaches 0.68 recall@10 and 0.511 MRR. See below — the floor, not the cross-encoder, is what moves this number. |
 
 Recall is not comparable across retrievers, so schema 2 records which one ran. A
 schema-1 report predates the hybrid retriever and is vector-only by construction.
@@ -135,6 +143,89 @@ is worth fusing; it just has to be asked a question it can answer.
 
 So this baseline pins the point the measurement starts from, not an improvement.
 The delta to watch for is the one `plan_query` unlocks.
+
+### Rerank measures two things, and they move in opposite directions
+
+`baseline-2026-09-16-rerank.json` reports recall on what the floor keeps, since
+that is all generation would see, and reports the ordering beside it. The two
+are worth reading separately:
+
+| | recall@1 | recall@10 | hit@10 | MRR |
+|---|---|---|---|---|
+| hybrid (2026-09-14) | 0.30 | 0.68 | 0.72 | 0.461 |
+| rerank, ordering only | **0.40** | 0.68 | 0.72 | **0.511** |
+| rerank, after the floor | 0.36 | 0.36 | 0.36 | 0.360 |
+
+The cross-encoder ranks better than fusion: it moves a relevant chunk into first
+place on ten more percentage points of the set and lifts MRR by 0.05. It cannot
+raise recall@10 here, because with `rerank_candidate_k` at 10 the pool it scores
+*is* the top 10 — reordering a list cannot add a page to it.
+
+Scoring deeper does add pages, and costs more than the query budget allows.
+
+### The candidate cap is a latency decision, and 30 does not fit
+
+Measured serially and warm on an Apple M5 CPU, int8, one query at a time:
+
+| candidates | p50 | p95 | recall@10 (ordering) | MRR |
+|---|---|---|---|---|
+| 10 | 1.94s | 2.27s | 0.68 | 0.511 |
+| 20 | 4.24s | 4.72s | — | — |
+| 30 | 7.26s | 7.99s | **0.76** | 0.517 |
+
+Roughly 0.2s per candidate, linear, and thread count is not the problem: the
+default already uses every performance core, and forcing 12 threads made it
+slower. At 30 candidates rerank alone exceeds the whole 6s per-query budget
+before `generate` has run, so the default is **10**. The +0.08 recall@10 that 30
+buys is real and currently unaffordable — this is the revisit ADR 0011 names,
+and its answer there is a sidecar service rather than a different algorithm.
+
+### At 0.44 the floor removes more evidence than it refuses
+
+Sweeping the floor over one scored run (30 candidates, k=10) gives the whole
+trade-off. "Gutted" counts answerable questions whose gold page the ranking
+*did* retrieve and the floor then removed entirely:
+
+| floor | recall@10 | answerable emptied | unanswerable refused | gutted |
+|---|---|---|---|---|
+| 0.00 | 0.76 | 0/25 | 0/6 | 0/20 |
+| 0.05 | 0.62 | 4/25 | 1/6 | 4/20 |
+| 0.20 | 0.58 | 5/25 | 2/6 | 5/20 |
+| 0.30 | 0.54 | 6/25 | 4/6 | 6/20 |
+| **0.44** | **0.40** | **7/25** | **5/6** | **9/20** |
+| 0.60 | 0.34 | 9/25 | 6/6 | 11/20 |
+
+No value is free: this cross-encoder scores many chunks that *do* contain the
+answer below 0.44, so every floor high enough to refuse the unanswerable
+questions also discards real evidence. The constant stays at its `CLAUDE.md`
+value and this table is the evidence for a re-fit, which ADR 0011 already makes
+a condition of changing the revision or the quantization — the same argument
+applies to a chunk size the floor was never fitted against.
+
+Two things keep this from being the silent failure it looks like. An emptied
+question re-enters the retrieval loop rather than answering ungrounded, and a
+kept-but-gutted one still has to pass `verify_grounding`. Neither node exists
+yet, so the cost is visible here and nowhere else.
+
+### The rerank score is a real refusal signal, where cosine was not
+
+The vector baseline established that no similarity threshold separates
+answerable from unanswerable on this set. The cross-encoder does, by top-1 score
+(30 candidates):
+
+| threshold | answerable kept | unanswerable refused |
+|---|---|---|
+| 0.20 | 20/25 | 2/6 |
+| 0.44 | 18/25 | 5/6 |
+| 0.60 | 16/25 | 6/6 |
+
+At 0.60 it refuses every unanswerable question while keeping two thirds of the
+answerable ones. Cosine could not refuse all six at any threshold without
+refusing 17 of 25 answerable questions with them. That is the measured case for
+ADR 0011's claim that the floor is what lets retrieval refuse on *retrieved, but
+nothing good enough* — and it stays a retrieval decision. It is never compared
+against tau, which the report enforces: a rerank run's calibration block is
+scored against `rerank_score_floor`.
 
 `make eval` writes `runs/latest.json`, which stays ignored. Pinning a baseline
 means copying one to `runs/baseline-<date>.json` and committing it — the report
