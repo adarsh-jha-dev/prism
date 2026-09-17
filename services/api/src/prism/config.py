@@ -121,6 +121,20 @@ class Settings(BaseSettings):
     concurrency_gemini: int = 4
     concurrency_openai: int = 2
 
+    # Lane guards (ADR 0014). The wait is for one of our own slots, not for a
+    # provider, and is bounded under latency_budget_s.
+    lane_queue_timeout_s: float = 5.0
+    # Consecutive failures, not a rate: at ~612 queries/24h a window is mostly empty.
+    breaker_failure_threshold: int = 5
+    breaker_cooldown_s: float = 30.0
+
+    # The paid lanes are defined but unwired; these bound a call once they are.
+    # Ollama Cloud is the serialization point, so its ceiling is the tightest.
+    ollama_cloud_timeout_s: float = 20.0
+    gemini_chat_model: str = "gemini-3.6-flash"
+    gemini_chat_timeout_s: float = 30.0
+    openai_chat_timeout_s: float = 30.0
+
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
 
