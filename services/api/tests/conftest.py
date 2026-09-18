@@ -167,9 +167,13 @@ def _authenticate_route_tests(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
-async def _close_redis_between_tests() -> AsyncIterator[None]:
-    """A redis-py client belongs to one event loop, and each test gets its own."""
-    from prism.db import close_redis
+async def _close_loop_bound_clients() -> AsyncIterator[None]:
+    """A redis-py client and a psycopg pool each belong to one event loop.
+
+    Each test gets its own loop, so both are closed between them.
+    """
+    from prism.db import close_checkpoint_pool, close_redis
 
     yield
     await close_redis()
+    await close_checkpoint_pool()

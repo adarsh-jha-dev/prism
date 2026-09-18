@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://prism:prism@localhost:5433/prism"
     redis_url: str = "redis://localhost:6380/0"
 
+    # The checkpointer's pool, not SQLAlchemy's (ADR 0015). Small: checkpoint
+    # writes are short, and the saver serializes its own cursors anyway.
+    checkpointer_pool_max_size: int = 4
+
     ollama_base_url: str = "http://localhost:11434"
     embedding_model: str = "nomic-embed-text"
     embedding_dim: int = 768
