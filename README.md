@@ -66,7 +66,7 @@ The default lane is local and free and needs the model pulled:
 ## Layout
 
 ```
-services/api/     Python: FastAPI + (later) LangGraph orchestration
+services/api/     Python: FastAPI + LangGraph orchestration
 apps/web/         Next.js dashboard — a thin client over REST/WebSocket
 docs/design/      Source design artifacts (ER diagrams, flow, UI mockups)
 docs/decisions/   ADRs for choices that are expensive to reverse
