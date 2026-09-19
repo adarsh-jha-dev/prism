@@ -2,7 +2,8 @@
 
 queries.status is checked against the three terminal states, so there is no
 'running'. The row is inserted refused, with a reason, and a run that dies
-halfway leaves it that way.
+halfway leaves it that way — total_cost_usd included, which stays NULL: an
+incomplete total, not a zero one.
 """
 
 import time
@@ -44,7 +45,18 @@ _FINALIZE_QUERY = text(
            refusal_reason = :refusal_reason,
            retrieval_attempts = :retrieval_attempts,
            grounding_attempts = :grounding_attempts,
-           latency_ms = :latency_ms
+           latency_ms = :latency_ms,
+           total_cost_usd = (
+               -- One call we could not price makes the total unknown, not
+               -- smaller (ADR 0013). A row with no provider made no call
+               -- (ADR 0016), and a query with no calls costs exactly zero.
+               SELECT CASE
+                          WHEN bool_or(provider IS NOT NULL AND price_id IS NULL) THEN NULL
+                          ELSE coalesce(sum(cost_usd), 0)
+                      END
+                 FROM query_traces
+                WHERE query_id = :id AND tenant_id = :tenant_id
+           )
      WHERE id = :id AND tenant_id = :tenant_id
     """
 )

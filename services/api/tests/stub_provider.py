@@ -8,7 +8,8 @@ import hashlib
 import math
 from collections.abc import Sequence
 
-from prism.embeddings import EmbeddingError
+from prism.chat import Usage
+from prism.embeddings import Embedded, EmbeddingError
 
 DIM = 768
 MODEL = "nomic-embed-text"
@@ -37,6 +38,20 @@ class StubProvider:
 
     async def embed_one(self, text: str) -> list[float]:
         return (await self.embed([text]))[0]
+
+    async def embed_metered(self, texts: Sequence[str]) -> Embedded:
+        vectors = await self.embed(texts)
+        usage = Usage(
+            model=MODEL,
+            provider="ollama",
+            billing_unit="tokens",
+            input_tokens=sum(len(t.split()) for t in texts),
+            output_tokens=0,
+            gpu_ms=None,
+            duration_ms=1,
+            cost_basis="metered",
+        )
+        return Embedded(vectors=vectors, usage=usage)
 
 
 def graded(similarity: float) -> list[float]:
