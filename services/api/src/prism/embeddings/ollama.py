@@ -3,15 +3,20 @@
 Self-hosted and free, on the `ollama` lane. There is deliberately no paid
 embedding path: a model swap invalidates every vector in the index, so the
 choice is a schema concern, not a routing one.
+
+The meter is Ollama's own `prompt_eval_count`. An embedding generates nothing,
+so output_tokens is a structural zero rather than a missing reading.
 """
 
+import time
 from collections.abc import Sequence
 from typing import Any
 
 import httpx
 
+from prism.chat.base import Usage
 from prism.config import Settings, get_settings
-from prism.embeddings.base import EmbeddingError
+from prism.embeddings.base import Embedded, EmbeddingError
 
 __all__ = ["OllamaEmbeddingProvider"]
 
@@ -48,16 +53,21 @@ class OllamaEmbeddingProvider:
         return data
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return (await self.embed_metered(texts)).vectors
+
+    async def embed_metered(self, texts: Sequence[str]) -> Embedded:
         items = list(texts)
         if not items:
-            return []
+            return Embedded(vectors=[], usage=self._usage(0, duration_ms=0))
         if any(not text.strip() for text in items):
             raise EmbeddingError("refusing to embed a blank string")
 
+        started = time.perf_counter()
         try:
             payload = await self._post({"model": self._model, "input": items})
         except httpx.HTTPError as exc:
             raise EmbeddingError(f"ollama embed failed: {type(exc).__name__}: {exc}") from exc
+        duration_ms = round((time.perf_counter() - started) * 1000)
 
         vectors = payload.get("embeddings")
         if not isinstance(vectors, list) or len(vectors) != len(items):
@@ -72,7 +82,23 @@ class OllamaEmbeddingProvider:
                     f"{self._model} returned {len(vector)} dims, expected {self._dim} — "
                     "chunks.embedding and the pulled model disagree"
                 )
-        return [[float(x) for x in vector] for vector in vectors]
+        count = payload.get("prompt_eval_count")
+        return Embedded(
+            vectors=[[float(x) for x in vector] for vector in vectors],
+            usage=self._usage(count if isinstance(count, int) else None, duration_ms=duration_ms),
+        )
+
+    def _usage(self, input_tokens: int | None, *, duration_ms: int) -> Usage:
+        return Usage(
+            model=self._model,
+            provider="ollama",
+            billing_unit="tokens",
+            input_tokens=input_tokens,
+            output_tokens=0,
+            gpu_ms=None,
+            duration_ms=duration_ms,
+            cost_basis="metered",
+        )
 
     async def embed_one(self, text: str) -> list[float]:
         return (await self.embed([text]))[0]

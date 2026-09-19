@@ -12,7 +12,7 @@ from prism.graph.checkpointer import CHECKPOINTER_SCHEMA_VERSION, get_checkpoint
 from prism.graph.graph import NODE_SEQUENCE, compile_graph
 from prism.graph.run import run_query
 from prism.graph.state import GraphState
-from prism.graph.trace import traced
+from prism.graph.trace import TraceContext, traced
 
 if TYPE_CHECKING:
     from prism.collections import CollectionRef
@@ -205,7 +205,7 @@ async def test_a_node_that_raises_writes_an_error_row_and_stops(
     """The run fails loudly, and what it wrote stays readable."""
 
     @traced("retrieve")
-    async def boom(state: GraphState) -> dict[str, Any]:
+    async def boom(state: GraphState, trace: TraceContext) -> dict[str, Any]:
         raise RuntimeError("retrieval exploded")
 
     monkeypatch.setattr("prism.graph.nodes.retrieve", boom)

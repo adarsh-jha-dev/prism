@@ -4,6 +4,8 @@
 - **Date:** 2026-09-14
 - **Relates to:** [0011](0011-rerank-runs-in-process.md),
   [0012](0012-query-trace-and-citation-model.md)
+- **Amended by:** [0016](0016-how-a-node-reports-to-the-trace-writer.md). A
+  trace row with no provider made no call and does not make the total unpriced
 - **Closes:** B4 in `docs/design/REVIEW.md`, and the pricing half of the open gap
   ADR 0012 deliberately left standing
 

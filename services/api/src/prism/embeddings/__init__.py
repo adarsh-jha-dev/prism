@@ -2,10 +2,11 @@
 
 from functools import lru_cache
 
-from prism.embeddings.base import EmbeddingError, EmbeddingProvider
+from prism.embeddings.base import Embedded, EmbeddingError, EmbeddingProvider
 from prism.embeddings.ollama import OllamaEmbeddingProvider
 
 __all__ = [
+    "Embedded",
     "EmbeddingError",
     "EmbeddingProvider",
     "OllamaEmbeddingProvider",

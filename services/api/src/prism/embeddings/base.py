@@ -1,9 +1,16 @@
-"""The embedding provider interface."""
+"""The embedding provider interface.
+
+`embed_metered` exists for the graph, whose trace rows need a meter. Ingestion
+and retrieval keep `embed` and do not pay for a Usage they never read.
+"""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-__all__ = ["EmbeddingError", "EmbeddingProvider"]
+from prism.chat.base import Usage
+
+__all__ = ["Embedded", "EmbeddingError", "EmbeddingProvider"]
 
 
 class EmbeddingError(RuntimeError):
@@ -12,6 +19,12 @@ class EmbeddingError(RuntimeError):
     Never caught and softened into a zero vector or a partial batch: a wrong
     vector silently retrieves wrong evidence, which is worse than no answer.
     """
+
+
+@dataclass(frozen=True)
+class Embedded:
+    vectors: list[list[float]]
+    usage: Usage
 
 
 @runtime_checkable
@@ -31,3 +44,7 @@ class EmbeddingProvider(Protocol):
         ...
 
     async def embed_one(self, text: str) -> list[float]: ...
+
+    async def embed_metered(self, texts: Sequence[str]) -> Embedded:
+        """`embed`, with the provider's own meter reading."""
+        ...

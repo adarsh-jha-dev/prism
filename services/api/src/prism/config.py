@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # The checkpointer's pool, not SQLAlchemy's (ADR 0015). Small: checkpoint
     # writes are short, and the saver serializes its own cursors anyway.
     checkpointer_pool_max_size: int = 4
+    # Per payload, serialized. Payloads are references (ADR 0012): a retrieve
+    # output of ten chunk ids and scores is under 1KB.
+    trace_payload_max_bytes: int = Field(default=8192, ge=256)
 
     ollama_base_url: str = "http://localhost:11434"
     embedding_model: str = "nomic-embed-text"

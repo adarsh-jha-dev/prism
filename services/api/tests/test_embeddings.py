@@ -103,3 +103,26 @@ async def test_transport_error_becomes_an_embedding_error() -> None:
 
     with pytest.raises(EmbeddingError, match="ollama embed failed"):
         await _provider(handler).embed(["a"])
+
+
+async def test_metered_embed_reports_the_providers_own_token_count() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"embeddings": [[0.1] * DIM, [0.2] * DIM], "prompt_eval_count": 9}
+        )
+
+    embedded = await _provider(handler).embed_metered(["a", "b"])
+    assert embedded.vectors == [[0.1] * DIM, [0.2] * DIM]
+    usage = embedded.usage
+    assert (usage.provider, usage.model, usage.billing_unit) == (
+        "ollama",
+        "nomic-embed-text",
+        "tokens",
+    )
+    assert (usage.input_tokens, usage.output_tokens, usage.gpu_ms) == (9, 0, None)
+    assert usage.cost_basis == "metered"
+
+
+async def test_a_missing_count_is_left_unreported_not_zeroed() -> None:
+    embedded = await _provider(_ok([[0.1] * DIM])).embed_metered(["a"])
+    assert embedded.usage.input_tokens is None
