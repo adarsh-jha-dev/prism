@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     vision_max_pages: int = 20  # per-document ceiling on paid calls
 
     planner_model: str = "qwen2.5:14b"  # plan_query, rewrite_query
+    # The lexical half ANDs its terms, so this is a recall knob (ADR 0010).
+    # Terms beyond it are dropped, never ORed.
+    planner_max_terms: int = 4
     grader_model: str = "llama3.1:8b"  # grade_docs, verify_grounding
     # generate, before escalation — and what a chat call uses when it names no model
     generator_model: str = "qwen2.5:32b"

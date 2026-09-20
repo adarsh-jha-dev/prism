@@ -3,6 +3,9 @@
 Guard order: resolve the lane and its provider, then the breaker, then the
 semaphore under a bounded wait, then the call. An open lane raises before it
 queues. Which lane to use is the Phase 3 router; cost is ADR 0013.
+
+`_guarded` takes a coroutine and the caller resolves its own provider, so a lane
+can serve an embedding without a chat `factory` (ADR 0018).
 """
 
 import asyncio
@@ -11,9 +14,11 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 import structlog
 from pydantic import BaseModel
 
-from prism.chat import ChatError, ChatProvider, Message, Usage
+from prism.chat import ChatProvider, Message, Usage
 from prism.config import Settings, get_settings
+from prism.embeddings import EmbeddingProvider, get_embedding_provider
 from prism.providers.base import (
+    PROVIDER_ERRORS,
     Lane,
     LaneBusy,
     LaneNotImplemented,
@@ -87,8 +92,9 @@ class ProviderRegistry:
         max_tokens: int | None = None,
     ) -> LaneResult[str]:
         chosen = model or self.lane(lane).model
+        provider = self.provider(lane)
 
-        async def run(provider: ChatProvider) -> tuple[str, Usage]:
+        async def run() -> tuple[str, Usage]:
             completion = await provider.complete(
                 messages, model=chosen, temperature=temperature, max_tokens=max_tokens
             )
@@ -107,8 +113,9 @@ class ProviderRegistry:
         max_tokens: int | None = None,
     ) -> LaneResult[T]:
         chosen = model or self.lane(lane).model
+        provider = self.provider(lane)
 
-        async def run(provider: ChatProvider) -> tuple[T, Usage]:
+        async def run() -> tuple[T, Usage]:
             result = await provider.structured(
                 messages, schema, model=chosen, temperature=temperature, max_tokens=max_tokens
             )
@@ -116,13 +123,32 @@ class ProviderRegistry:
 
         return await self._guarded(lane, run)
 
+    async def embed(
+        self,
+        lane: str,
+        texts: Sequence[str],
+        *,
+        provider: EmbeddingProvider | None = None,
+    ) -> LaneResult[list[list[float]]]:
+        """Embed under the lane's guards (ADR 0018).
+
+        The graph's path. Ingestion keeps `get_embedding_provider()` directly,
+        so a large ingest does not contend for the query path's slots.
+        """
+        embedder = provider or get_embedding_provider()
+
+        async def run() -> tuple[list[list[float]], Usage]:
+            embedded = await embedder.embed_metered(texts)
+            return embedded.vectors, embedded.usage
+
+        return await self._guarded(lane, run)
+
     async def _guarded[V](
         self,
         name: str,
-        run: Callable[[ChatProvider], Awaitable[tuple[V, Usage]]],
+        run: Callable[[], Awaitable[tuple[V, Usage]]],
     ) -> LaneResult[V]:
         lane = self.lane(name)
-        provider = self.provider(name)
         breaker = self._breakers[name]
 
         try:
@@ -150,8 +176,8 @@ class ProviderRegistry:
 
         try:
             try:
-                value, usage = await run(provider)
-            except ChatError as exc:
+                value, usage = await run()
+            except PROVIDER_ERRORS as exc:
                 detail = f"{type(exc).__name__}: {exc}"
                 breaker.record_failure(detail)
                 log.warning("lane_call_failed", lane=name, state=breaker.state, detail=detail)

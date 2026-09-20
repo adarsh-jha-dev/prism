@@ -131,9 +131,10 @@ questions are prose — they parse to 6-12 stemmed lexemes — and no single
 | terms ANDed per question | 6-12 |
 
 ADR 0010 predicted this and assigned the fix: fewer, better terms from
-`plan_query`, never a looser parser. That node does not exist yet, so
-`hybrid_search(terms=...)` is unset on every eval run and the raw question is
-parsed.
+`plan_query`, never a looser parser. That node now extracts them, but the eval
+runner calls `hybrid_search` directly rather than through the graph, so `terms`
+is still unset on every run pinned below and the raw question is parsed. Feeding
+the planner's terms to eval re-opens these baselines and is its own commit.
 
 The lexical half is not weak — it is unfed. Ranking the same index with OR
 semantics as a one-off diagnostic (not a proposed change, and not committed)

@@ -14,6 +14,7 @@ from structlog.testing import capture_logs
 from prism.chat import ChatError, ChatProvider, Completion, Message, Structured, Usage
 from prism.chat.ollama import OllamaChatProvider
 from prism.config import Settings
+from prism.embeddings import Embedded, EmbeddingError
 from prism.providers import (
     LANE_NAMES,
     Lane,
@@ -353,3 +354,109 @@ async def test_a_successful_call_logs_the_lane_and_the_meter() -> None:
     assert call["lane"] == "stub"
     assert call["billing_unit"] == "gpu_ms"
     assert call["duration_ms"] == 23
+
+
+# ------------------------------------------------- embeddings (ADR 0018)
+
+
+class StubEmbedder:
+    """Counts overlapping calls, the way StubLaneProvider does."""
+
+    model = "nomic-embed-text"
+    dim = 4
+
+    def __init__(self, *, delay: float = 0.0, fail: bool = False) -> None:
+        self.calls = 0
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.delay = delay
+        self._fail = fail
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return (await self.embed_metered(texts)).vectors
+
+    async def embed_one(self, text: str) -> list[float]:
+        return (await self.embed([text]))[0]
+
+    async def embed_metered(self, texts: Sequence[str]) -> Embedded:
+        self.calls += 1
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            if self._fail:
+                raise EmbeddingError("stub refusing to embed")
+            return Embedded(
+                vectors=[[0.0, 0.0, 0.0, 1.0] for _ in texts],
+                usage=Usage(
+                    model=self.model,
+                    provider="ollama",
+                    billing_unit="tokens",
+                    input_tokens=7,
+                    output_tokens=0,
+                    gpu_ms=None,
+                    duration_ms=3,
+                    cost_basis="metered",
+                ),
+            )
+        finally:
+            self.in_flight -= 1
+
+
+async def test_an_embedding_goes_through_the_lane_and_keeps_its_meter() -> None:
+    registry, _ = _stub_registry()
+    embedder = StubEmbedder()
+
+    result = await registry.embed("stub", ["a question"], provider=embedder)
+
+    assert result.lane == "stub"
+    assert result.value == [[0.0, 0.0, 0.0, 1.0]]
+    # The provider's own reading, unpriced.
+    assert result.usage.model == "nomic-embed-text"
+    assert result.usage.input_tokens == 7
+
+
+async def test_embedding_takes_a_slot_on_the_lane_it_shares_with_generation() -> None:
+    """One Ollama process, one cap."""
+    registry, _ = _stub_registry(concurrency=1)
+    embedder = StubEmbedder(delay=0.05)
+
+    await asyncio.gather(*(registry.embed("stub", ["q"], provider=embedder) for _ in range(3)))
+
+    assert embedder.calls == 3
+    assert embedder.max_in_flight == 1
+
+
+async def test_a_failed_embedding_is_evidence_about_the_provider() -> None:
+    """ADR 0014's failure set, widened by ADR 0018."""
+    registry, _ = _stub_registry(threshold=1)
+    embedder = StubEmbedder(fail=True)
+
+    with pytest.raises(EmbeddingError):
+        await registry.embed("stub", ["q"], provider=embedder)
+
+    assert registry.breaker("stub").state == "open"
+    # The open lane rejects the next caller before it reaches the provider.
+    with pytest.raises(LaneUnavailable):
+        await registry.embed("stub", ["q"], provider=embedder)
+    assert embedder.calls == 1
+
+
+async def test_an_embedding_lane_needs_no_chat_provider() -> None:
+    """The embedding model is not the lane's chat model."""
+    lane = Lane(
+        name="bare",
+        billing_unit="tokens",
+        concurrency=2,
+        queue_timeout_s=1.0,
+        timeout_s=1.0,
+    )
+    registry = ProviderRegistry({"bare": lane}, Settings())
+
+    result = await registry.embed("bare", ["q"], provider=StubEmbedder())
+    assert result.value
+
+    # The same lane still refuses a chat call, loudly.
+    with pytest.raises(LaneNotImplemented):
+        await registry.complete("bare", ASK)
