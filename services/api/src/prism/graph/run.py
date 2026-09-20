@@ -15,11 +15,17 @@ import structlog
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy import text
 
+from prism.config import get_settings
 from prism.core.ids import uuid7
 from prism.db import get_engine
 from prism.graph.checkpointer import get_checkpointer
 from prism.graph.graph import compile_graph
-from prism.graph.state import GraphState, RefusalReason, TerminalStatus
+from prism.graph.state import (
+    GraphState,
+    RefusalReason,
+    TerminalStatus,
+    search_params_from,
+)
 from prism.graph.trace import link_checkpoints
 
 __all__ = ["QueryRun", "mint_query", "run_query"]
@@ -107,6 +113,12 @@ async def run_query(*, tenant_id: UUID, collection_id: UUID, question: str) -> Q
         "retrieval_attempts": 0,
         "grounding_attempts": 0,
         "sequence": 0,
+        # Empty rather than absent: a channel with no value is indistinguishable
+        # from one a node failed to write.
+        "search_terms": [],
+        "search_params": search_params_from(get_settings()),
+        "query_embedding": None,
+        "candidates": [],
         "status": "refused",
         "refusal_reason": "no_relevant_evidence",
     }

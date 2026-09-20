@@ -31,6 +31,57 @@ class Authenticate(Protocol):
     ) -> "ResolvedKey": ...
 
 
+@pytest.fixture(autouse=True)
+async def _sweep_orphan_checkpoints(request: pytest.FixtureRequest) -> AsyncIterator[None]:
+    """Checkpoints hold no foreign key, so dropping a tenant cannot cascade here.
+
+    Retention (ADR 0012) is not built yet; until it is, the tests sweep their own
+    threads.
+    """
+    yield
+    if request.node.get_closest_marker("integration") is None:
+        return  # the unit tier touches no database
+    from sqlalchemy import text
+
+    from prism.db import get_engine
+
+    async with get_engine().begin() as conn:
+        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+            await conn.execute(
+                text(f"DELETE FROM {table} WHERE thread_id NOT IN (SELECT thread_id FROM queries)")
+            )
+
+
+@pytest.fixture
+def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the graph without Ollama, for tests whose subject is the machinery.
+
+    Patched where each default is resolved, so nothing reaches the network.
+    tests/test_graph_nodes.py covers the live path.
+    """
+    from prism.config import Settings
+    from prism.providers import Lane, ProviderRegistry
+    from stub_chat import StubChat
+    from stub_provider import StubProvider
+
+    planner = StubChat('{"terms": ["chinchilla", "ratio"]}')
+    lane = Lane(
+        name="ollama",
+        billing_unit="tokens",
+        concurrency=8,
+        queue_timeout_s=1.0,
+        timeout_s=1.0,
+        model="stub-model",
+        factory=lambda: planner,
+    )
+    registry = ProviderRegistry({"ollama": lane}, Settings())
+    embedder = StubProvider()
+
+    monkeypatch.setattr("prism.graph.nodes.get_registry", lambda: registry)
+    monkeypatch.setattr("prism.providers.registry.get_embedding_provider", lambda: embedder)
+    monkeypatch.setattr("prism.retrieval.hybrid.get_embedding_provider", lambda: embedder)
+
+
 @pytest.fixture
 def app() -> FastAPI:
     """A fresh app per test, so one test's dependency overrides cannot leak."""

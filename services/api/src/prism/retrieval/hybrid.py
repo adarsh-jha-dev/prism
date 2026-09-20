@@ -17,8 +17,8 @@ not occupy a top-k slot any more than a vector one may.
 
 Zero lexical hits is a normal outcome, not an error. `websearch_to_tsquery` ANDs
 unquoted terms, so a long prose question often matches nothing; the fix is fewer
-and better terms from `plan_query`, never a looser parser. Until that node
-exists, `terms` is unset and the raw question is parsed.
+and better terms from `plan_query`, never a looser parser. The graph passes those
+terms; eval and the search route do not, and parse the raw question.
 """
 
 from collections.abc import Sequence
@@ -114,6 +114,9 @@ async def hybrid_search(
     collection_id: UUID,
     terms: Sequence[str] | None = None,
     k: int | None = None,
+    candidate_k: int | None = None,
+    rrf_k: int | None = None,
+    query_vector: Sequence[float] | None = None,
     provider: EmbeddingProvider | None = None,
     settings: Settings | None = None,
     engine: AsyncEngine | None = None,
@@ -124,6 +127,9 @@ async def hybrid_search(
     question is parsed instead. Either way the text goes through
     `websearch_to_tsquery`, never `to_tsquery`, which raises on user punctuation.
 
+    `query_vector` is what `embed_query` produced, if it has run (ADR 0017).
+    Unset, this embeds the query itself, as eval and the search route do.
+
     `tenant_id` is the caller's, resolved from their API key. An empty list means
     neither half found anything in scope — never that the scope was applied late.
     """
@@ -131,20 +137,26 @@ async def hybrid_search(
     provider = provider or get_embedding_provider()
     engine = engine or get_engine()
     k = settings.retrieval_top_k if k is None else k
+    candidate_k = settings.retrieval_candidate_k if candidate_k is None else candidate_k
+    rrf_k = settings.rrf_k if rrf_k is None else rrf_k
 
     if k < 1:
         raise ValueError(f"k must be positive, got {k}")
     if not query.strip():
         raise ValueError("query is empty")
+    # The distance operator does not care which model produced the vector.
+    if query_vector is not None and len(query_vector) != provider.dim:
+        raise ValueError(f"query_vector is {len(query_vector)}-dim, provider is {provider.dim}-dim")
 
     query_text = " ".join(terms) if terms else query
 
     async with engine.connect() as conn:
         await assert_compatible(conn, collection_id, provider, tenant_id=tenant_id)
 
-    query_vector = await provider.embed_one(query)
+    if query_vector is None:
+        query_vector = await provider.embed_one(query)
 
-    candidates = max(settings.retrieval_candidate_k, k)
+    candidates = max(candidate_k, k)
     ef_search = max(settings.hnsw_ef_search, candidates)
     scope = {"collection_id": collection_id, "tenant_id": tenant_id, "candidates": candidates}
 
@@ -156,7 +168,7 @@ async def hybrid_search(
             {"ef_search": str(ef_search), "scan": settings.hnsw_iterative_scan},
         )
         vector_rows = (
-            await conn.execute(_VECTOR_HALF, {**scope, "query_vector": str(query_vector)})
+            await conn.execute(_VECTOR_HALF, {**scope, "query_vector": str(list(query_vector))})
         ).all()
         lexical_rows = (
             await conn.execute(_LEXICAL_HALF, {**scope, "query_text": query_text})
@@ -169,7 +181,7 @@ async def hybrid_search(
     vector_at = {chunk_id: i for i, chunk_id in enumerate(vector_ids, start=1)}
     lexical_at = {chunk_id: i for i, chunk_id in enumerate(lexical_ids, start=1)}
 
-    fused = _fuse([vector_ids, lexical_ids], k=settings.rrf_k)[:k]
+    fused = _fuse([vector_ids, lexical_ids], k=rrf_k)[:k]
     return [
         HybridHit(
             chunk_id=chunk_id,

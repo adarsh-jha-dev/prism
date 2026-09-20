@@ -1,6 +1,5 @@
 """The graph skeleton: trace rows, checkpoints, and a refusal with a reason."""
 
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -19,20 +18,8 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-async def _sweep_orphan_checkpoints(request: pytest.FixtureRequest) -> AsyncIterator[None]:
-    """Checkpoints hold no foreign key, so dropping a tenant cannot cascade here.
-
-    Retention (ADR 0012) is not built yet; until it is, the tests sweep their own
-    threads.
-    """
-    yield
-    if request.node.get_closest_marker("integration") is None:
-        return  # the unit tier touches no database
-    async with get_engine().begin() as conn:
-        for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
-            await conn.execute(
-                text(f"DELETE FROM {table} WHERE thread_id NOT IN (SELECT thread_id FROM queries)")
-            )
+def _no_live_models(stubbed_models: None) -> None:
+    """This module's subject is the machinery around a node."""
 
 
 def test_checkpointer_schema_version_matches_the_pin() -> None:
@@ -81,7 +68,8 @@ async def test_every_node_writes_one_contiguous_trace_row(collection: "Collectio
 async def test_a_stub_node_records_no_meter_and_no_price(collection: "CollectionRef") -> None:
     """Stubs call no model, so the meter and price columns stay NULL.
 
-    Migration 0009's meters_check and priced_check enforce the pairing.
+    Migration 0009's meters_check and priced_check enforce the pairing. The nodes
+    that do call one are asserted in tests/test_graph_nodes.py.
     """
     run = await run_query(
         tenant_id=collection.tenant_id,
@@ -90,6 +78,8 @@ async def test_a_stub_node_records_no_meter_and_no_price(collection: "Collection
     )
 
     for row in await _traces(run.query_id):
+        if row["node_name"] in ("plan_query", "embed_query"):
+            continue
         assert row["billing_unit"] == "none"
         assert row["provider"] is None and row["model"] is None
         assert row["input_tokens"] is None and row["output_tokens"] is None

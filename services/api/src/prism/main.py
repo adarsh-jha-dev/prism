@@ -15,7 +15,7 @@ from prism.config import get_settings
 from prism.db import lifespan_resources
 
 
-def _configure_logging(level: str) -> None:
+def _configure_logging(level: str, *, cache: bool = True) -> None:
     logging.basicConfig(format="%(message)s", level=getattr(logging, level.upper(), logging.INFO))
     structlog.configure(
         processors=[
@@ -27,7 +27,9 @@ def _configure_logging(level: str) -> None:
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(logging, level.upper(), logging.INFO)
         ),
-        cache_logger_on_first_use=True,
+        # Caching swaps each module's lazy proxy in place, which
+        # structlog.testing.capture_logs() can no longer intercept.
+        cache_logger_on_first_use=cache,
     )
 
 
@@ -39,7 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    _configure_logging(settings.log_level)
+    _configure_logging(settings.log_level, cache=settings.prism_env != "test")
 
     app = FastAPI(
         title="Prism API",

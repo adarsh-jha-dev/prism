@@ -3,6 +3,7 @@
 from functools import lru_cache
 
 from prism.providers.base import (
+    PROVIDER_ERRORS,
     BillingUnit,
     Lane,
     LaneBusy,
@@ -19,6 +20,7 @@ from prism.providers.registry import ProviderRegistry
 
 __all__ = [
     "LANE_NAMES",
+    "PROVIDER_ERRORS",
     "BillingUnit",
     "BreakerState",
     "CircuitBreaker",

@@ -2,17 +2,20 @@
 
 Four endings, deliberately not collapsed: `UnknownLane` (a typo),
 `LaneNotImplemented` (defined lane, no provider), `LaneRejected` (never reached
-the provider) and the provider's own `ChatError`. Only `ChatError` is evidence
-about a provider, and only it counts toward a breaker (ADR 0014).
+the provider) and the provider's own error. Only a provider's own error is
+evidence about it, and only those count toward a breaker (ADR 0014, amended by
+0018 to include embeddings).
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from prism.chat import ChatProvider, Usage
+from prism.chat import ChatError, ChatProvider, Usage
+from prism.embeddings import EmbeddingError
 
 __all__ = [
+    "PROVIDER_ERRORS",
     "BillingUnit",
     "Lane",
     "LaneBusy",
@@ -25,6 +28,9 @@ __all__ = [
 ]
 
 BillingUnit = Literal["tokens", "gpu_ms", "none"]
+
+# A call that reached the provider and failed there (ADR 0018).
+PROVIDER_ERRORS: tuple[type[Exception], ...] = (ChatError, EmbeddingError)
 
 
 class LaneError(RuntimeError):

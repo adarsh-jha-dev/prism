@@ -14,12 +14,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from prism.chat import Usage
+from prism.config import get_settings
 from prism.core.ids import uuid7
 from prism.db import get_engine
 from prism.graph.checkpointer import get_checkpointer
 from prism.graph.graph import compile_graph
 from prism.graph.run import mint_query, run_query
-from prism.graph.state import GraphState
+from prism.graph.state import GraphState, search_params_from
 from prism.graph.trace import TraceContext, traced
 from stub_chat import usage
 
@@ -84,6 +85,10 @@ async def _state(collection: "CollectionRef") -> GraphState:
         "retrieval_attempts": 0,
         "grounding_attempts": 0,
         "sequence": 0,
+        "search_terms": [],
+        "search_params": search_params_from(get_settings()),
+        "query_embedding": None,
+        "candidates": [],
         "status": "refused",
         "refusal_reason": "no_relevant_evidence",
     }
@@ -298,7 +303,10 @@ def _patch_node(monkeypatch: pytest.MonkeyPatch, name: str, meter: Usage) -> Non
 
 
 async def test_the_query_total_is_the_sum_of_its_priced_trace_rows(
-    collection: "CollectionRef", paid_model: str, monkeypatch: pytest.MonkeyPatch
+    collection: "CollectionRef",
+    paid_model: str,
+    monkeypatch: pytest.MonkeyPatch,
+    stubbed_models: None,
 ) -> None:
     _patch_node(monkeypatch, "embed_query", usage("nomic-embed-text"))
     _patch_node(
@@ -324,7 +332,8 @@ async def test_the_query_total_is_the_sum_of_its_priced_trace_rows(
 
     rows = await _rows(run.query_id)
     priced = [row["cost_usd"] for row in rows if row["price_id"] is not None]
-    assert len(priced) == 2
+    # plan_query meters too, and prices to zero on the local lane.
+    assert len(priced) == 3
     total = await _total(run.query_id)
     assert total == sum(priced, Decimal(0))
     # 2000 * 0.30 / 1e6 + 300 * 2.50 / 1e6, and the local embed adds exactly 0.
@@ -332,7 +341,7 @@ async def test_the_query_total_is_the_sum_of_its_priced_trace_rows(
 
 
 async def test_one_unpriced_call_makes_the_total_null_not_smaller(
-    collection: "CollectionRef", monkeypatch: pytest.MonkeyPatch
+    collection: "CollectionRef", monkeypatch: pytest.MonkeyPatch, stubbed_models: None
 ) -> None:
     """ADR 0013: a partial sum is wrong in the flattering direction."""
     _patch_node(monkeypatch, "embed_query", usage("nomic-embed-text"))
@@ -346,10 +355,13 @@ async def test_one_unpriced_call_makes_the_total_null_not_smaller(
     assert await _total(run.query_id) is None
 
 
-async def test_a_query_that_called_nothing_totals_exactly_zero(
-    collection: "CollectionRef",
+async def test_a_query_of_only_free_calls_totals_exactly_zero(
+    collection: "CollectionRef", stubbed_models: None
 ) -> None:
-    """ADR 0016: a row with no provider made no call and is not an unpriced one."""
+    """ADR 0016: a row with no provider made no call and is not an unpriced one.
+
+    The total is 0 — a number — rather than NULL.
+    """
     run = await run_query(
         tenant_id=collection.tenant_id,
         collection_id=collection.collection_id,
@@ -359,7 +371,7 @@ async def test_a_query_that_called_nothing_totals_exactly_zero(
 
 
 async def test_usage_and_payloads_never_reach_a_checkpoint(
-    collection: "CollectionRef", monkeypatch: pytest.MonkeyPatch
+    collection: "CollectionRef", monkeypatch: pytest.MonkeyPatch, stubbed_models: None
 ) -> None:
     marker = f"trace-only-{uuid7()}"
     question = f"state-{uuid7()}"
