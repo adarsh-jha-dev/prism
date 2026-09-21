@@ -110,6 +110,9 @@ async def run_query(*, tenant_id: UUID, collection_id: UUID, question: str) -> Q
         "collection_id": collection_id,
         "thread_id": thread_id,
         "question": question,
+        # Seeded, not absent: retrieval searches for the question until the
+        # rewriter says otherwise, and `question` is never written again.
+        "retrieval_query": question,
         "retrieval_attempts": 0,
         "grounding_attempts": 0,
         "sequence": 0,

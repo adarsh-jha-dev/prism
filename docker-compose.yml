@@ -69,6 +69,10 @@ services:
       VISION_LANE: ${VISION_LANE:-ollama}
       VISION_OLLAMA_MODEL: ${VISION_OLLAMA_MODEL:-qwen2.5vl:7b}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Unset by default, which disables the tenant routes rather than opening
+      # them. Nothing else can create the first tenant, so an operator setting
+      # this in .env is how a stack gets bootstrapped.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
     volumes:
       # A `ready` document whose bytes vanished on rebuild cannot be re-ingested.
       - uploads:/app/var/uploads

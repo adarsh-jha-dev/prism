@@ -22,12 +22,21 @@ from prism.graph.graph import compile_graph
 from prism.graph.run import mint_query, run_query
 from prism.graph.state import GraphState, search_params_from
 from prism.graph.trace import TraceContext, traced
+from seeding import seed
 from stub_chat import usage
 
 if TYPE_CHECKING:
+    from conftest import StubbedModels
     from prism.collections import CollectionRef
 
 pytestmark = pytest.mark.integration
+
+
+async def _answerable(collection: "CollectionRef") -> None:
+    """One chunk, so grading has something to pass and the run reaches generate."""
+    vector = [0.0] * 768
+    vector[0] = 1.0
+    await seed(collection.collection_id, [("the provisioning ratio is twenty", vector)])
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +91,7 @@ async def _state(collection: "CollectionRef") -> GraphState:
         "collection_id": collection.collection_id,
         "thread_id": thread_id,
         "question": "what did the node report?",
+        "retrieval_query": "what did the node report?",
         "retrieval_attempts": 0,
         "grounding_attempts": 0,
         "sequence": 0,
@@ -306,8 +316,9 @@ async def test_the_query_total_is_the_sum_of_its_priced_trace_rows(
     collection: "CollectionRef",
     paid_model: str,
     monkeypatch: pytest.MonkeyPatch,
-    stubbed_models: None,
+    stubbed_models: "StubbedModels",
 ) -> None:
+    await _answerable(collection)
     _patch_node(monkeypatch, "embed_query", usage("nomic-embed-text"))
     _patch_node(
         monkeypatch,
@@ -332,8 +343,8 @@ async def test_the_query_total_is_the_sum_of_its_priced_trace_rows(
 
     rows = await _rows(run.query_id)
     priced = [row["cost_usd"] for row in rows if row["price_id"] is not None]
-    # plan_query meters too, and prices to zero on the local lane.
-    assert len(priced) == 3
+    # plan_query and grade_docs meter too, and both price to zero on the local lane.
+    assert len(priced) == 4
     total = await _total(run.query_id)
     assert total == sum(priced, Decimal(0))
     # 2000 * 0.30 / 1e6 + 300 * 2.50 / 1e6, and the local embed adds exactly 0.
@@ -341,9 +352,12 @@ async def test_the_query_total_is_the_sum_of_its_priced_trace_rows(
 
 
 async def test_one_unpriced_call_makes_the_total_null_not_smaller(
-    collection: "CollectionRef", monkeypatch: pytest.MonkeyPatch, stubbed_models: None
+    collection: "CollectionRef",
+    monkeypatch: pytest.MonkeyPatch,
+    stubbed_models: "StubbedModels",
 ) -> None:
     """ADR 0013: a partial sum is wrong in the flattering direction."""
+    await _answerable(collection)
     _patch_node(monkeypatch, "embed_query", usage("nomic-embed-text"))
     _patch_node(monkeypatch, "generate", usage("not-a-priced-model"))
 
@@ -356,7 +370,7 @@ async def test_one_unpriced_call_makes_the_total_null_not_smaller(
 
 
 async def test_a_query_of_only_free_calls_totals_exactly_zero(
-    collection: "CollectionRef", stubbed_models: None
+    collection: "CollectionRef", stubbed_models: "StubbedModels"
 ) -> None:
     """ADR 0016: a row with no provider made no call and is not an unpriced one.
 
@@ -371,7 +385,9 @@ async def test_a_query_of_only_free_calls_totals_exactly_zero(
 
 
 async def test_usage_and_payloads_never_reach_a_checkpoint(
-    collection: "CollectionRef", monkeypatch: pytest.MonkeyPatch, stubbed_models: None
+    collection: "CollectionRef",
+    monkeypatch: pytest.MonkeyPatch,
+    stubbed_models: "StubbedModels",
 ) -> None:
     marker = f"trace-only-{uuid7()}"
     question = f"state-{uuid7()}"

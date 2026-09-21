@@ -5,7 +5,7 @@ tests/fixtures/.
 """
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
@@ -19,6 +19,7 @@ os.environ.setdefault("PRISM_ENV", "test")
 if TYPE_CHECKING:
     from prism.auth import ResolvedKey, Scope
     from prism.collections import CollectionRef
+    from stub_chat import ScriptedChat
 
 
 class Authenticate(Protocol):
@@ -52,34 +53,61 @@ async def _sweep_orphan_checkpoints(request: pytest.FixtureRequest) -> AsyncIter
             )
 
 
+class StubbedModels(Protocol):
+    """What `stubbed_models` hands back, so a test can script the run."""
+
+    def __call__(
+        self,
+        *,
+        plan: "str | Sequence[str]" = ...,
+        grade: "str | Sequence[str]" = ...,
+        rewrite: "str | Sequence[str]" = ...,
+    ) -> "ScriptedChat": ...
+
+
 @pytest.fixture
-def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> None:
+def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> "StubbedModels":
     """Run the graph without Ollama, for tests whose subject is the machinery.
 
     Patched where each default is resolved, so nothing reaches the network.
     tests/test_graph_nodes.py covers the live path.
+
+    Calling the fixture re-scripts the replies; depending on it without calling
+    it takes the defaults, which pass the first candidate and rewrite once.
     """
     from prism.config import Settings
     from prism.providers import Lane, ProviderRegistry
-    from stub_chat import StubChat
+    from stub_chat import ScriptedChat
     from stub_provider import StubProvider
 
-    planner = StubChat('{"terms": ["chinchilla", "ratio"]}')
-    lane = Lane(
-        name="ollama",
-        billing_unit="tokens",
-        concurrency=8,
-        queue_timeout_s=1.0,
-        timeout_s=1.0,
-        model="stub-model",
-        factory=lambda: planner,
-    )
-    registry = ProviderRegistry({"ollama": lane}, Settings())
     embedder = StubProvider()
-
-    monkeypatch.setattr("prism.graph.nodes.get_registry", lambda: registry)
     monkeypatch.setattr("prism.providers.registry.get_embedding_provider", lambda: embedder)
     monkeypatch.setattr("prism.retrieval.hybrid.get_embedding_provider", lambda: embedder)
+
+    def script(
+        *,
+        plan: "str | Sequence[str]" = '{"terms": ["chinchilla", "ratio"]}',
+        grade: "str | Sequence[str]" = '{"verdicts": [{"label": 1, "score": 0.9}]}',
+        rewrite: "str | Sequence[str]" = '{"query": "rewritten query"}',
+    ) -> "ScriptedChat":
+        chat = ScriptedChat(
+            {"QueryPlan": plan, "RelevanceVerdicts": grade, "QueryRewrite": rewrite}
+        )
+        lane = Lane(
+            name="ollama",
+            billing_unit="tokens",
+            concurrency=8,
+            queue_timeout_s=1.0,
+            timeout_s=1.0,
+            model="stub-model",
+            factory=lambda: chat,
+        )
+        registry = ProviderRegistry({"ollama": lane}, Settings())
+        monkeypatch.setattr("prism.graph.nodes.get_registry", lambda: registry)
+        return chat
+
+    script()
+    return script
 
 
 @pytest.fixture
