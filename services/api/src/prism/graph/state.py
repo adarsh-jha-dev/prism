@@ -70,7 +70,15 @@ class GraphState(TypedDict):
     tenant_id: UUID
     collection_id: UUID
     thread_id: str
+
+    # What the user asked. Written once at mint and never again: grading and
+    # generation judge against this, so a rewrite cannot move the goalposts it
+    # is about to be judged against (ADR 0019).
     question: str
+    # What retrieval currently searches for. Seeded to `question`, replaced by
+    # `rewrite_query`. Read by plan_query, embed_query and retrieve, and by
+    # nothing that judges.
+    retrieval_query: str
 
     # The two correction loops count independently.
     retrieval_attempts: Annotated[int, monotonic]

@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     # two loops count independently.
     abstention_threshold: float = 0.58
     max_attempts: int = 3
+    # Relevance at grade_docs, never groundedness: the two are separate
+    # quantities that share a 0-1 scale, and tau is the other one (ADR 0019).
+    # Uncalibrated, and never derived from abstention_threshold.
+    doc_relevance_threshold: float = 0.5
     # Applies to the reranker's sigmoid, never its raw logit.
     rerank_score_floor: float = 0.44
 

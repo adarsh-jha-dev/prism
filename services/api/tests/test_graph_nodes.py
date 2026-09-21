@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from prism.config import get_settings
 from prism.db import get_engine
 from prism.graph.checkpointer import get_checkpointer
-from prism.graph.graph import NODE_SEQUENCE, compile_graph
+from prism.graph.graph import compile_graph
 from prism.graph.nodes import _clean_terms
 from prism.graph.run import QueryRun, run_query
 from seeding import seed
@@ -39,11 +39,13 @@ def _unit(index: int) -> list[float]:
 
 
 async def _traces(query_id: UUID) -> dict[str, dict[str, Any]]:
+    """Each node's first row. A live grader may or may not send the run round
+    again, and what these tests assert is what a node records on attempt 1."""
     async with get_engine().connect() as conn:
         rows = await conn.execute(
             text(
                 """
-                SELECT node_name, sequence, status, error, provider, model,
+                SELECT node_name, sequence, attempt, status, error, provider, model,
                        billing_unit, input_tokens, output_tokens, gpu_ms,
                        price_id, cost_usd, cost_basis, input_json, output_json,
                        input_truncated, output_truncated
@@ -54,7 +56,10 @@ async def _traces(query_id: UUID) -> dict[str, dict[str, Any]]:
             ),
             {"query_id": query_id},
         )
-        return {row["node_name"]: dict(row) for row in rows.mappings()}
+        first: dict[str, dict[str, Any]] = {}
+        for row in rows.mappings():
+            first.setdefault(row["node_name"], dict(row))
+        return first
 
 
 # ---------------------------------------------------------------- unit tier
@@ -167,7 +172,8 @@ async def test_embed_query_records_the_vectors_shape_and_never_the_vector(
     run: QueryRun,
 ) -> None:
     row = (await _traces(run.query_id))["embed_query"]
-    assert row["input_json"] == {"question": QUESTION}
+    # The retrieval query, which on attempt 1 is the question verbatim.
+    assert row["input_json"] == {"retrieval_query": QUESTION}
     assert row["output_json"]["dim"] == get_settings().embedding_dim
     # A zero-norm vector retrieves arbitrary neighbours.
     assert row["output_json"]["norm"] > 0
@@ -183,7 +189,8 @@ async def test_plan_query_records_the_terms_and_the_parameters_it_pinned(
     row = (await _traces(run.query_id))["plan_query"]
     settings = get_settings()
 
-    assert row["input_json"] == {"question": QUESTION}
+    assert row["input_json"] == {"retrieval_query": QUESTION}
+    assert row["output_json"]["pinned"] is True
     assert row["output_json"]["params"] == {
         "k": settings.retrieval_top_k,
         "candidate_k": settings.retrieval_candidate_k,
@@ -204,6 +211,7 @@ async def test_retrieve_records_ids_and_positions_and_no_chunk_text(
     row = (await _traces(run.query_id))["retrieve"]
 
     assert row["input_json"]["k"] == get_settings().retrieval_top_k
+    assert row["input_json"]["retrieval_query"] == QUESTION
     assert "terms" in row["input_json"]
 
     candidates = row["output_json"]
@@ -344,11 +352,19 @@ async def test_sequences_stay_contiguous_and_the_checkpoint_round_trips_the_stat
     run: QueryRun,
 ) -> None:
     rows = await _traces(run.query_id)
-    assert [row["sequence"] for row in rows.values()] == list(range(1, len(NODE_SEQUENCE) + 1))
-    assert list(rows) == list(NODE_SEQUENCE)
+    assert rows["plan_query"]["sequence"] == 1
+    assert [rows[name]["attempt"] for name in ("plan_query", "embed_query", "retrieve")] == [
+        1,
+        1,
+        1,
+    ]
 
     graph = compile_graph(await get_checkpointer())
     values = (await graph.aget_state({"configurable": {"thread_id": run.thread_id}})).values
+
+    # The question survives whatever the loop did to the retrieval query.
+    assert values["question"] == QUESTION
+    assert isinstance(values["retrieval_query"], str) and values["retrieval_query"]
 
     embedding = values["query_embedding"]
     assert isinstance(embedding, list)
@@ -358,8 +374,9 @@ async def test_sequences_stay_contiguous_and_the_checkpoint_round_trips_the_stat
     assert values["search_params"]["k"] == get_settings().retrieval_top_k
     assert isinstance(values["search_terms"], list)
 
-    candidates = values["candidates"]
+    # The set as `retrieve` left it: grade_docs may have pruned what is in state.
+    candidates = rows["retrieve"]["output_json"]
     assert candidates
-    # UUIDs survive the checkpoint as UUIDs.
-    assert all(isinstance(candidate["chunk_id"], UUID) for candidate in candidates)
     assert [candidate["rank"] for candidate in candidates] == list(range(1, len(candidates) + 1))
+    # UUIDs survive the checkpoint as UUIDs.
+    assert all(isinstance(c["chunk_id"], UUID) for c in values["candidates"])

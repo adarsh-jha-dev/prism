@@ -15,7 +15,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import structlog
@@ -30,7 +30,15 @@ from prism.db import get_engine
 from prism.graph.state import GraphState
 from prism.pricing import price
 
-__all__ = ["Node", "TraceContext", "TracedNode", "cap_payload", "link_checkpoints", "traced"]
+__all__ = [
+    "AttemptCounter",
+    "Node",
+    "TraceContext",
+    "TracedNode",
+    "cap_payload",
+    "link_checkpoints",
+    "traced",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -80,6 +88,12 @@ class TraceContext:
 
 Node = Callable[[GraphState, TraceContext], Awaitable[dict[str, Any]]]
 TracedNode = Callable[[GraphState], Awaitable[dict[str, Any]]]
+
+# Which loop a node belongs to, declared at its decorator. `query_traces` has
+# one `attempt` column and the node name says which loop it counts (ADR 0012);
+# this is where the node says it, rather than the writer inferring it from a
+# name it does not own.
+AttemptCounter = Literal["retrieval_attempts", "grounding_attempts"]
 
 _INSERT = text(
     """
@@ -230,16 +244,25 @@ async def write_trace(
         )
 
 
-def traced(node_name: str) -> Callable[[Node], TracedNode]:
+def traced(
+    node_name: str, *, attempts: AttemptCounter | None = None
+) -> Callable[[Node], TracedNode]:
     """Wrap a node so that running it writes exactly one trace row.
 
     LangGraph sees `(state) -> update`; the TraceContext never leaves the wrapper.
+
+    `attempts` names the loop counter this node is inside. The row takes that
+    counter plus one, read before the node body runs, so every node in one pass
+    of a loop carries the same attempt — including the node that increments it,
+    which does so on the way out. A node outside both loops declares nothing and
+    writes attempt 1, which is the whole truth about it.
     """
 
     def decorate(fn: Node) -> TracedNode:
         @functools.wraps(fn)
         async def wrapper(state: GraphState) -> dict[str, Any]:
             sequence = state["sequence"] + 1
+            attempt = 1 if attempts is None else state[attempts] + 1
             started_at = datetime.now(UTC)
             clock = time.perf_counter()
             trace = TraceContext()
@@ -255,8 +278,7 @@ def traced(node_name: str) -> Callable[[Node], TracedNode]:
                     tenant_id=state["tenant_id"],
                     node_name=node_name,
                     sequence=sequence,
-                    # The loops assign this once they exist.
-                    attempt=1,
+                    attempt=attempt,
                     status="error",
                     started_at=started_at,
                     duration_ms=elapsed_ms(),
@@ -271,7 +293,7 @@ def traced(node_name: str) -> Callable[[Node], TracedNode]:
                 tenant_id=state["tenant_id"],
                 node_name=node_name,
                 sequence=sequence,
-                attempt=1,
+                attempt=attempt,
                 status="ok",
                 started_at=started_at,
                 duration_ms=elapsed_ms(),
