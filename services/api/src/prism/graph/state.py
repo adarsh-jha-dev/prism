@@ -29,16 +29,22 @@ def monotonic(current: int, incoming: int) -> int:
 
 
 class SearchParams(TypedDict):
-    """What `plan_query` resolved retrieval to run with.
+    """What `plan_query` resolved this run to retrieve and correct with.
 
     In state rather than read from `Settings` per node, so a fork runs the
-    parameters the original run used.
+    parameters the original run used (ADR 0017).
+
+    Model names are not here by choice: which model answers is the cost-aware
+    router's decision, taken per call (Phase 3).
     """
 
     k: int
     candidate_k: int
     rrf_k: int
     rerank_score_floor: float
+    # Read by `grade_docs` and by `after_grade_docs`. Not widths, same argument.
+    doc_relevance_threshold: float
+    max_attempts: int
 
 
 def search_params_from(settings: Settings) -> SearchParams:
@@ -48,6 +54,8 @@ def search_params_from(settings: Settings) -> SearchParams:
         candidate_k=settings.retrieval_candidate_k,
         rrf_k=settings.rrf_k,
         rerank_score_floor=settings.rerank_score_floor,
+        doc_relevance_threshold=settings.doc_relevance_threshold,
+        max_attempts=settings.max_attempts,
     )
 
 

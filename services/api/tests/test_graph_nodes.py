@@ -196,6 +196,8 @@ async def test_plan_query_records_the_terms_and_the_parameters_it_pinned(
         "candidate_k": settings.retrieval_candidate_k,
         "rrf_k": settings.rrf_k,
         "rerank_score_floor": settings.rerank_score_floor,
+        "doc_relevance_threshold": settings.doc_relevance_threshold,
+        "max_attempts": settings.max_attempts,
     }
     terms = row["output_json"]["terms"]
     assert isinstance(terms, list)

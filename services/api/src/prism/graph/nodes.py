@@ -122,10 +122,9 @@ async def plan_query(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     (ADR 0010). The rewrite loop re-enters here so that rule lives in one prompt
     rather than two that can diverge (ADR 0019).
 
-    Parameters are pinned so a fork retrieves at the width the original run used
-    (ADR 0017), which means the loop's later passes must not re-pin them: a
-    second execution would re-read `Settings` and a fork taken after a change
-    would retrieve at a width the original run never used.
+    Parameters are pinned so a fork retrieves and corrects as the original run
+    did (ADR 0017), which means later passes must not re-pin: a second execution
+    would re-read `Settings`.
     """
     settings = get_settings()
     result = await get_registry().structured(
@@ -225,7 +224,16 @@ async def retrieve(state: GraphState, trace: TraceContext) -> dict[str, Any]:
         for hit in hits
     ]
 
-    trace.record_input({"retrieval_query": state["retrieval_query"], "terms": terms, **params})
+    # The widths this search ran at, not the whole pinned set.
+    trace.record_input(
+        {
+            "retrieval_query": state["retrieval_query"],
+            "terms": terms,
+            "k": params["k"],
+            "candidate_k": params["candidate_k"],
+            "rrf_k": params["rrf_k"],
+        }
+    )
     # Ids and positions: fusion yields no magnitude (ADR 0010), and chunk text is
     # already a row in `chunks` (ADR 0012).
     trace.record_output([dict(candidate) for candidate in candidates])
@@ -250,11 +258,14 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     which the rewriter produced and which grading would otherwise let it define
     its own success by.
 
+    The threshold is the run's pinned value, not the live one (ADR 0017).
+
     Closes the attempt by incrementing `retrieval_attempts`. The surviving
     candidates are the graph's pass/fail signal: nothing the grader rejected
     reaches `rerank`, `generate` or a citation.
     """
     settings = get_settings()
+    threshold = state["search_params"]["doc_relevance_threshold"]
     candidates = state["candidates"]
     attempt = state["retrieval_attempts"] + 1
 
@@ -297,9 +308,7 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
             "score": scores.get(chunk.chunk_id),
             # Derived from one threshold, so the grader cannot both score 0.9
             # and call it irrelevant.
-            "verdict": "pass"
-            if (scores.get(chunk.chunk_id) or 0.0) >= settings.doc_relevance_threshold
-            else "fail",
+            "verdict": "pass" if (scores.get(chunk.chunk_id) or 0.0) >= threshold else "fail",
         }
         for chunk in chunks
     ]
@@ -311,7 +320,7 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
         {
             "verdicts": [{**v, "chunk_id": str(v["chunk_id"])} for v in verdicts],
             "kept": len(kept),
-            "threshold": settings.doc_relevance_threshold,
+            "threshold": threshold,
         }
     )
     if not kept:

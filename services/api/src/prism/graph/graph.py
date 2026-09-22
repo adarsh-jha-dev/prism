@@ -6,13 +6,15 @@ and ends at `abstain`, because an answer needs citations it cannot yet produce.
 
 The loop re-enters at `plan_query` so term extraction stays in one prompt
 (ADR 0019). `plan_query` does not re-pin `search_params` on a later pass.
+
+Edges read their policy from state, never from `Settings`: an edge decides
+without writing a trace row.
 """
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from prism.config import get_settings
 from prism.graph import nodes
 from prism.graph.state import GraphState
 
@@ -37,10 +39,13 @@ def after_grade_docs(state: GraphState) -> str:
 
     `grade_docs` keeps the candidates that passed and drops the rest, so a set
     that survives grading is the pass signal and an empty one is the fail.
+
+    `max_attempts` is the run's pinned value, so a fork has as many passes left
+    as the original run did (ADR 0017).
     """
     if state["candidates"]:
         return "rerank"
-    if state["retrieval_attempts"] < get_settings().max_attempts:
+    if state["retrieval_attempts"] < state["search_params"]["max_attempts"]:
         return "rewrite_query"
     # Exhaustion refuses directly. Nothing goes between here and `abstain`: the
     # design's web-search fallback is out, because generation nodes make no
