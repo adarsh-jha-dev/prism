@@ -126,6 +126,7 @@ async def test_an_empty_candidate_set_fails_grading_without_a_model_call(
             "k": 10,
             "candidate_k": 30,
             "rrf_k": 60,
+            "rerank_candidate_k": 10,
             "rerank_score_floor": 0.44,
             "doc_relevance_threshold": 0.5,
             "max_attempts": 3,
@@ -216,8 +217,10 @@ async def test_nothing_relevant_exhausts_retrieval_and_refuses_with_a_reason(
     assert len(_named(rows, "retrieve")) == attempts
     assert len(_named(rows, "grade_docs")) == attempts
     assert len(_named(rows, "rewrite_query")) == attempts - 1
+    # rerank is inside the loop now (ADR 0020), so it ran on every pass.
+    assert len(_named(rows, "rerank")) == attempts
     # The pass path is not on this route at all.
-    assert _named(rows, "rerank") == []
+    assert _named(rows, "generate") == []
     assert [row["node_name"] for row in rows][-1] == "abstain"
 
     async with get_engine().connect() as conn:
@@ -480,8 +483,8 @@ async def test_a_passing_grade_reaches_abstain_with_insufficient_evidence(
         "plan_query",
         "embed_query",
         "retrieve",
-        "grade_docs",
         "rerank",
+        "grade_docs",
         "generate",
         "verify_grounding",
         "abstain",
@@ -658,8 +661,7 @@ async def test_a_fork_grades_at_the_bar_the_original_run_graded_at(
     assert graded[0]["output_json"]["threshold"] == 0.5
     assert graded[0]["output_json"]["kept"] == 1
     # It reached the pass path and refused there, as the original did.
-    assert [row["node_name"] for row in rows[-4:]] == [
-        "rerank",
+    assert [row["node_name"] for row in rows[-3:]] == [
         "generate",
         "verify_grounding",
         "abstain",

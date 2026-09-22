@@ -29,7 +29,7 @@ def _exhausted() -> list[str]:
     attempts = get_settings().max_attempts
     nodes: list[str] = []
     for attempt in range(1, attempts + 1):
-        nodes += ["plan_query", "embed_query", "retrieve", "grade_docs"]
+        nodes += ["plan_query", "embed_query", "retrieve", "rerank", "grade_docs"]
         if attempt < attempts:
             nodes.append("rewrite_query")
     return [*nodes, "abstain"]

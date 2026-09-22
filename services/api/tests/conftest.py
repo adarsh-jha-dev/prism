@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from prism.auth import ResolvedKey, Scope
     from prism.collections import CollectionRef
     from stub_chat import ScriptedChat
+    from stub_reranker import StubReranker
 
 
 class Authenticate(Protocol):
@@ -62,6 +63,7 @@ class StubbedModels(Protocol):
         plan: "str | Sequence[str]" = ...,
         grade: "str | Sequence[str]" = ...,
         rewrite: "str | Sequence[str]" = ...,
+        reranker: "StubReranker | None" = ...,
     ) -> "ScriptedChat": ...
 
 
@@ -79,6 +81,7 @@ def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> "StubbedModels":
     from prism.providers import Lane, ProviderRegistry
     from stub_chat import ScriptedChat
     from stub_provider import StubProvider
+    from stub_reranker import StubReranker
 
     embedder = StubProvider()
     monkeypatch.setattr("prism.providers.registry.get_embedding_provider", lambda: embedder)
@@ -89,7 +92,12 @@ def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> "StubbedModels":
         plan: "str | Sequence[str]" = '{"terms": ["chinchilla", "ratio"]}',
         grade: "str | Sequence[str]" = '{"verdicts": [{"label": 1, "score": 0.9}]}',
         rewrite: "str | Sequence[str]" = '{"query": "rewritten query"}',
+        reranker: "StubReranker | None" = None,
     ) -> "ScriptedChat":
+        # Well clear of rerank_score_floor: a test about the loop should not have
+        # to think about the floor, and a test about the floor scripts its own.
+        scorer = reranker or StubReranker(default=0.9)
+        monkeypatch.setattr("prism.graph.nodes.get_reranker", lambda: scorer)
         chat = ScriptedChat(
             {"QueryPlan": plan, "RelevanceVerdicts": grade, "QueryRewrite": rewrite}
         )
