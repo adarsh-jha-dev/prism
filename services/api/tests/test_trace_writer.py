@@ -343,8 +343,9 @@ async def test_the_query_total_is_the_sum_of_its_priced_trace_rows(
 
     rows = await _rows(run.query_id)
     priced = [row["cost_usd"] for row in rows if row["price_id"] is not None]
-    # plan_query and grade_docs meter too, and both price to zero on the local lane.
-    assert len(priced) == 4
+    # plan_query and grade_docs meter on the local lane, and rerank on the
+    # in-process one. All three price to zero; zero is a price (ADR 0013).
+    assert len(priced) == 5
     total = await _total(run.query_id)
     assert total == sum(priced, Decimal(0))
     # 2000 * 0.30 / 1e6 + 300 * 2.50 / 1e6, and the local embed adds exactly 0.

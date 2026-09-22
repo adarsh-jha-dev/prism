@@ -42,11 +42,12 @@ query
   -> plan_query
   -> embed_query
   -> retrieve                  hybrid Postgres FTS + HNSW, fused by RRF
-  -> grade_docs
-       pass -> rerank
+  -> rerank                    cross-encoder over the fused pool, cut to k by
+                               the floor (ADR 0020: before grade_docs, not after)
+  -> grade_docs                judges only what the floor kept
+       pass -> cost-aware router
        fail -> rewrite_query, retry retrieval
                attempts exhausted -> abstain -> END: refused (no_relevant_evidence)
-  -> rerank
   -> cost-aware router         cheapest provider meeting cost/latency budget
   -> generate                  local first, escalate under budget
   -> verify_grounding
@@ -100,6 +101,10 @@ floor **0.44** · cost budget **$0.0050/query** · latency budget **6s/query**.
 When no provider meets both budgets, that is a refusal — never a silent
 overspend.
 
+`rerank` runs **before** `grade_docs` (ADR 0020). A set the floor empties
+re-enters the retrieval loop through `grade_docs`' own empty path, so one pass of
+the loop stays one attempt whichever gate fails it.
+
 `abstention_threshold` (tau) applies **only** to the grader's groundedness score
 at `verify_grounding`. It must never be compared against a cosine similarity:
 the two are different quantities that happen to share a 0-1 scale, and on the
@@ -148,7 +153,8 @@ search is gone; `plan_query`, `embed_query`, `rerank` are in the graph; graders
 are local; the roster is the four providers; retry canon is 3.
 
 Closed by ADR — **do not re-raise**: the lexical half is Postgres FTS, not BM25,
-and nothing user-visible may claim BM25 (ADR 0010); rerank is an in-process int8
+and nothing user-visible may claim BM25 (ADR 0010); rerank runs before
+`grade_docs` (ADR 0020); rerank is an in-process int8
 cross-encoder (0011); the query/trace/citation model, its partitioning stance and
 "refusals are not cached" (0012); `cost_usd` has a price basis in an
 effective-dated `model_pricing` (0013).

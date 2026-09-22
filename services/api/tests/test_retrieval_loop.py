@@ -18,7 +18,7 @@ from prism.db import get_engine
 from prism.graph.checkpointer import get_checkpointer
 from prism.graph.graph import compile_graph
 from prism.graph.nodes import RelevanceVerdicts, grade_docs
-from prism.graph.run import QueryRun, run_query
+from prism.graph.run import QueryRun, mint_query, run_query
 from prism.graph.state import GraphState
 from prism.graph.trace import TraceContext
 from prism.retrieval.hydrate import hydrate_chunks
@@ -65,6 +65,41 @@ def _named(rows: list[dict[str, Any]], node: str) -> list[dict[str, Any]]:
     return [row for row in rows if row["node_name"] == node]
 
 
+def _change_settings(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Settings:
+    """Change `Settings` under every module the graph could read it from.
+
+    `prism.graph.graph` no longer imports it; `raising=False` keeps the patch
+    honest if an edge goes back to reading the live value.
+    """
+    settings = Settings(**overrides)
+    for module in ("prism.graph.nodes", "prism.graph.graph", "prism.graph.run"):
+        monkeypatch.setattr(f"{module}.get_settings", lambda: settings, raising=False)
+    return settings
+
+
+async def _fork(values: dict[str, Any], *, question: str) -> UUID:
+    """Re-enter the graph with the state a checkpoint held, as its own query.
+
+    Not a resume onto the same thread: `queries.thread_id` and
+    `query_traces.sequence` are both unique (migration 0009), so a fork gets its
+    own query row and thread, seeded with the original run's values.
+    """
+    query_id, thread_id = await mint_query(
+        tenant_id=values["tenant_id"],
+        collection_id=values["collection_id"],
+        question=question,
+    )
+    state = {**values, "query_id": query_id, "thread_id": thread_id, "sequence": 0}
+    graph = compile_graph(await get_checkpointer())
+    await graph.ainvoke(state, config={"configurable": {"thread_id": thread_id}})
+    return query_id
+
+
+async def _final_values(thread_id: str) -> dict[str, Any]:
+    graph = compile_graph(await get_checkpointer())
+    return dict((await graph.aget_state({"configurable": {"thread_id": thread_id}})).values)
+
+
 # ------------------------------------------------------------ the unit tier
 
 
@@ -87,7 +122,15 @@ async def test_an_empty_candidate_set_fails_grading_without_a_model_call(
         "grounding_attempts": 0,
         "sequence": 0,
         "search_terms": [],
-        "search_params": {"k": 10, "candidate_k": 30, "rrf_k": 60, "rerank_score_floor": 0.44},
+        "search_params": {
+            "k": 10,
+            "candidate_k": 30,
+            "rrf_k": 60,
+            "rerank_candidate_k": 10,
+            "rerank_score_floor": 0.44,
+            "doc_relevance_threshold": 0.5,
+            "max_attempts": 3,
+        },
         "query_embedding": None,
         "candidates": [],
         "status": "refused",
@@ -174,8 +217,10 @@ async def test_nothing_relevant_exhausts_retrieval_and_refuses_with_a_reason(
     assert len(_named(rows, "retrieve")) == attempts
     assert len(_named(rows, "grade_docs")) == attempts
     assert len(_named(rows, "rewrite_query")) == attempts - 1
+    # rerank is inside the loop now (ADR 0020), so it ran on every pass.
+    assert len(_named(rows, "rerank")) == attempts
     # The pass path is not on this route at all.
-    assert _named(rows, "rerank") == []
+    assert _named(rows, "generate") == []
     assert [row["node_name"] for row in rows][-1] == "abstain"
 
     async with get_engine().connect() as conn:
@@ -207,8 +252,7 @@ async def test_a_grader_that_never_passes_cannot_spin_past_the_maximum(
 ) -> None:
     """The bound is the configured one, not the default that happens to be 3."""
     stubbed_models(grade=NOTHING_PASSES)
-    settings = Settings(max_attempts=2)
-    monkeypatch.setattr("prism.graph.graph.get_settings", lambda: settings)
+    _change_settings(monkeypatch, max_attempts=2)
 
     run = await run_query(
         tenant_id=unanswerable.tenant_id,
@@ -439,8 +483,8 @@ async def test_a_passing_grade_reaches_abstain_with_insufficient_evidence(
         "plan_query",
         "embed_query",
         "retrieve",
-        "grade_docs",
         "rerank",
+        "grade_docs",
         "generate",
         "verify_grounding",
         "abstain",
@@ -542,3 +586,84 @@ async def test_a_fork_mid_loop_resumes_on_the_right_attempt(
     forked = await graph.aget_state(entries[-1].config)
     assert forked.values["retrieval_attempts"] == get_settings().max_attempts - 1
     assert forked.values["retrieval_query"] == "harbour berth scheduling"
+
+
+# ------------------------------------------- the pinned parameters, on a fork
+
+
+@pytest.mark.integration
+async def test_a_fork_loops_as_many_more_times_as_the_original_run_had_left(
+    unanswerable: "CollectionRef", stubbed_models: "StubbedModels", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`max_attempts` is pinned, so lowering it cannot cut a fork's loop short.
+
+    The fork re-enters one attempt in, with two passes left as the original had.
+    Read live from a `Settings` saying 1, it would refuse without rewriting.
+    """
+    stubbed_models(grade=NOTHING_PASSES)
+    original = await run_query(
+        tenant_id=unanswerable.tenant_id,
+        collection_id=unanswerable.collection_id,
+        question=QUESTION,
+    )
+    assert len(_named(await _rows(original.query_id), "grade_docs")) == 3
+
+    graph = compile_graph(await get_checkpointer())
+    config: RunnableConfig = {"configurable": {"thread_id": original.thread_id}}
+    # The first failed grading: attempt closed, rewrite not yet run.
+    mid_loop = [
+        snapshot
+        async for snapshot in graph.aget_state_history(config)
+        if snapshot.next == ("rewrite_query",)
+    ][-1]
+    assert mid_loop.values["retrieval_attempts"] == 1
+
+    _change_settings(monkeypatch, max_attempts=1)
+    forked = await _fork(dict(mid_loop.values), question=QUESTION)
+
+    rows = await _rows(forked)
+    assert len(_named(rows, "grade_docs")) == 2
+    assert len(_named(rows, "rewrite_query")) == 1
+    assert [row["attempt"] for row in _named(rows, "grade_docs")] == [2, 3]
+    assert rows[-1]["node_name"] == "abstain"
+    assert rows[-1]["output_json"]["refusal_reason"] == "no_relevant_evidence"
+
+
+@pytest.mark.integration
+async def test_a_fork_grades_at_the_bar_the_original_run_graded_at(
+    collection: "CollectionRef", stubbed_models: "StubbedModels", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`doc_relevance_threshold` is pinned, so raising it cannot fail a fork's evidence.
+
+    The grader scores 0.6 in both runs. Pinned at 0.5 the fork keeps the chunk
+    and refuses on grounding; read live from a `Settings` saying 0.9 it would
+    keep nothing and refuse `no_relevant_evidence` instead.
+    """
+    await seed(collection.collection_id, [(CHINCHILLA, _unit(0))])
+    stubbed_models(grade='{"verdicts": [{"label": 1, "score": 0.6}]}')
+
+    original = await run_query(
+        tenant_id=collection.tenant_id,
+        collection_id=collection.collection_id,
+        question=QUESTION,
+    )
+    assert original.refusal_reason == "insufficient_evidence"
+    values = await _final_values(original.thread_id)
+    assert values["retrieval_attempts"] == 1
+    assert values["search_params"]["doc_relevance_threshold"] == 0.5
+
+    _change_settings(monkeypatch, doc_relevance_threshold=0.9)
+    forked = await _fork(values, question=QUESTION)
+
+    rows = await _rows(forked)
+    graded = _named(rows, "grade_docs")
+    assert len(graded) == 1
+    assert graded[0]["output_json"]["threshold"] == 0.5
+    assert graded[0]["output_json"]["kept"] == 1
+    # It reached the pass path and refused there, as the original did.
+    assert [row["node_name"] for row in rows[-3:]] == [
+        "generate",
+        "verify_grounding",
+        "abstain",
+    ]
+    assert rows[-1]["output_json"]["refusal_reason"] == "insufficient_evidence"

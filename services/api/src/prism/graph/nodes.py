@@ -1,9 +1,12 @@
 """The graph's nodes.
 
 The retrieval loop is implemented — `plan_query`, `embed_query`, `retrieve`,
-`grade_docs`, `rewrite_query` and `abstain`. `rerank`, `generate` and
+`rerank`, `grade_docs`, `rewrite_query` and `abstain`. `generate` and
 `verify_grounding` are still stubs writing one trace row each, so the pass path
 runs through them and refuses at `abstain` for want of a citation.
+
+`rerank` sits between `retrieve` and `grade_docs` (ADR 0020): it scores the
+fused pool and cuts it to `k`, so the grader judges only what the floor kept.
 
 Retrieval reads `retrieval_query`, which the loop rewrites. Grading and
 generation read `question`, which nothing rewrites (ADR 0019).
@@ -13,6 +16,7 @@ copies (ADR 0012), and call models through the registry (ADR 0018).
 """
 
 import math
+import time
 from typing import Any
 from uuid import UUID
 
@@ -20,6 +24,7 @@ import structlog
 from pydantic import BaseModel, Field
 
 from prism.chat import Message
+from prism.chat.base import Usage
 from prism.config import get_settings
 from prism.graph.state import (
     CandidateRef,
@@ -29,8 +34,10 @@ from prism.graph.state import (
 )
 from prism.graph.trace import TraceContext, traced
 from prism.providers import get_registry
-from prism.retrieval.hybrid import hybrid_search
+from prism.rerank import RerankError, get_reranker
+from prism.retrieval.hybrid import HybridHit, hybrid_search
 from prism.retrieval.hydrate import HydratedChunk, hydrate_chunks
+from prism.retrieval.rerank import rerank as rerank_hits
 
 __all__ = [
     "ChunkRelevance",
@@ -52,6 +59,9 @@ log = structlog.get_logger(__name__)
 
 # `generate`'s lane is the Phase 3 router's decision.
 _LOCAL_LANE = "ollama"
+# Not a registry lane: the reranker runs in this process and reports no Usage of
+# its own. The name is what `model_pricing` prices it under (ADR 0013).
+_IN_PROCESS_LANE = "in-process"
 
 _PLANNER_SYSTEM = (
     "You extract search terms for a full-text index. The index requires EVERY "
@@ -122,10 +132,9 @@ async def plan_query(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     (ADR 0010). The rewrite loop re-enters here so that rule lives in one prompt
     rather than two that can diverge (ADR 0019).
 
-    Parameters are pinned so a fork retrieves at the width the original run used
-    (ADR 0017), which means the loop's later passes must not re-pin them: a
-    second execution would re-read `Settings` and a fork taken after a change
-    would retrieve at a width the original run never used.
+    Parameters are pinned so a fork retrieves and corrects as the original run
+    did (ADR 0017), which means later passes must not re-pin: a second execution
+    would re-read `Settings`.
     """
     settings = get_settings()
     result = await get_registry().structured(
@@ -202,13 +211,16 @@ async def retrieve(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     """
     params = state["search_params"]
     terms = state["search_terms"]
+    # The pool `rerank` scores, not the final k — it cuts to k (ADR 0020). Same
+    # width the eval harness fuses at, so a pinned baseline measures this node.
+    pool = max(params["k"], params["rerank_candidate_k"])
 
     hits = await hybrid_search(
         state["retrieval_query"],
         tenant_id=state["tenant_id"],
         collection_id=state["collection_id"],
         terms=terms or None,
-        k=params["k"],
+        k=pool,
         candidate_k=params["candidate_k"],
         rrf_k=params["rrf_k"],
         query_vector=state["query_embedding"],
@@ -221,11 +233,22 @@ async def retrieve(state: GraphState, trace: TraceContext) -> dict[str, Any]:
             rank=hit.rank,
             vector_rank=hit.vector_rank,
             lexical_rank=hit.lexical_rank,
+            # Fusion yields no magnitude (ADR 0010); `rerank` fills this in.
+            rerank_score=None,
         )
         for hit in hits
     ]
 
-    trace.record_input({"retrieval_query": state["retrieval_query"], "terms": terms, **params})
+    # The widths this search ran at, not the whole pinned set.
+    trace.record_input(
+        {
+            "retrieval_query": state["retrieval_query"],
+            "terms": terms,
+            "pool": pool,
+            "candidate_k": params["candidate_k"],
+            "rrf_k": params["rrf_k"],
+        }
+    )
     # Ids and positions: fusion yields no magnitude (ADR 0010), and chunk text is
     # already a row in `chunks` (ADR 0012).
     trace.record_output([dict(candidate) for candidate in candidates])
@@ -250,11 +273,14 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     which the rewriter produced and which grading would otherwise let it define
     its own success by.
 
+    The threshold is the run's pinned value, not the live one (ADR 0017).
+
     Closes the attempt by incrementing `retrieval_attempts`. The surviving
     candidates are the graph's pass/fail signal: nothing the grader rejected
     reaches `rerank`, `generate` or a citation.
     """
     settings = get_settings()
+    threshold = state["search_params"]["doc_relevance_threshold"]
     candidates = state["candidates"]
     attempt = state["retrieval_attempts"] + 1
 
@@ -273,10 +299,11 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
 
     if not chunks:
         # Retrieved ids that hydrate to nothing: deleted or re-ingested since
-        # (ADR 0017). Still a fail, and still no call.
+        # (ADR 0017). A fail, and still no call — so the set has to be cleared
+        # here, or an unreadable candidate would read downstream as a pass.
         trace.record_input({"candidates": [str(c["chunk_id"]) for c in candidates]})
         trace.record_output({"verdicts": [], "kept": 0, "reason": "no_hydrated_chunks"})
-        return {"retrieval_attempts": attempt}
+        return {"retrieval_attempts": attempt, "candidates": []}
 
     result = await get_registry().structured(
         _LOCAL_LANE,
@@ -297,9 +324,7 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
             "score": scores.get(chunk.chunk_id),
             # Derived from one threshold, so the grader cannot both score 0.9
             # and call it irrelevant.
-            "verdict": "pass"
-            if (scores.get(chunk.chunk_id) or 0.0) >= settings.doc_relevance_threshold
-            else "fail",
+            "verdict": "pass" if (scores.get(chunk.chunk_id) or 0.0) >= threshold else "fail",
         }
         for chunk in chunks
     ]
@@ -311,7 +336,7 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
         {
             "verdicts": [{**v, "chunk_id": str(v["chunk_id"])} for v in verdicts],
             "kept": len(kept),
-            "threshold": settings.doc_relevance_threshold,
+            "threshold": threshold,
         }
     )
     if not kept:
@@ -386,9 +411,203 @@ async def rewrite_query(state: GraphState, trace: TraceContext) -> dict[str, Any
     return {"retrieval_query": after}
 
 
-@traced("rerank")
+@traced("rerank", attempts="retrieval_attempts")
 async def rerank(state: GraphState, trace: TraceContext) -> dict[str, Any]:
-    return {}
+    """Score the fused pool with the cross-encoder, cut to k, apply the floor.
+
+    Runs before `grade_docs` (ADR 0020), so the grader judges only what the
+    floor kept. Calls the same `retrieval.rerank.rerank` the eval harness calls,
+    with the run's pinned floor and pool, so a pinned baseline keeps measuring
+    this node rather than something shaped like it.
+
+    Scored against `question`, never `retrieval_query`: reranking is a relevance
+    judgement, and a judging node reads what the user asked (ADR 0019).
+
+    A set the floor empties re-enters the retrieval loop (ADR 0011) — through
+    `grade_docs`, which finds nothing to grade and closes the attempt. This node
+    never increments the counter: one pass of the loop is one attempt, whichever
+    gate fails it.
+    """
+    settings = get_settings()
+    params = state["search_params"]
+    floor = params["rerank_score_floor"]
+    candidates = state["candidates"]
+    ids = [candidate["chunk_id"] for candidate in candidates]
+    trace.record_input({"candidates": [str(chunk_id) for chunk_id in ids], "floor": floor})
+
+    if not candidates:
+        trace.record_output({"ranked": [], "kept": 0, "reason": "no_candidates"})
+        return {}
+
+    chunks = await hydrate_chunks(
+        ids, tenant_id=state["tenant_id"], collection_id=state["collection_id"]
+    )
+    by_id = {chunk.chunk_id: chunk for chunk in chunks}
+    hits = [
+        _hybrid_hit(candidate, by_id[candidate["chunk_id"]])
+        for candidate in candidates
+        if candidate["chunk_id"] in by_id
+    ]
+    if not hits:
+        # Retrieved ids that hydrate to nothing (ADR 0017). Nothing to score,
+        # and an empty set is what sends the pass back round the loop.
+        trace.record_output({"ranked": [], "kept": 0, "reason": "no_hydrated_chunks"})
+        return {"candidates": []}
+
+    reranker = get_reranker()
+    clock = time.perf_counter()
+    try:
+        # Idempotent and lock-guarded, and a no-op once the process has loaded.
+        # The node cannot assume someone else loaded the weights: `score` raises
+        # rather than loading lazily, so a node that skipped this would fall back
+        # to fusion order on every query and say so only on its own trace row.
+        await reranker.load()
+        reranked = await rerank_hits(
+            state["question"],
+            hits,
+            k=params["k"],
+            reranker=reranker,
+            settings=settings.model_copy(
+                update={
+                    "rerank_candidate_k": params["rerank_candidate_k"],
+                    "rerank_score_floor": floor,
+                }
+            ),
+        )
+    except RerankError as exc:
+        return _rerank_fallback(state, trace, hits, params["k"], exc)
+
+    # No provider and no meter, but a model ran and ADR 0013 prices it — at zero,
+    # from a real `model_pricing` row, so the node reads as free rather than
+    # unpriced. `metered` because there is nothing to estimate: the unit is none.
+    trace.record_usage(
+        Usage(
+            model=reranker.model,
+            provider=_IN_PROCESS_LANE,
+            billing_unit="none",
+            input_tokens=None,
+            output_tokens=None,
+            gpu_ms=None,
+            duration_ms=int((time.perf_counter() - clock) * 1000),
+            cost_basis="metered",
+        )
+    )
+
+    # Reranked order, with the fusion positions the candidate came in with: the
+    # trace row and the dashboard show both, and neither is derivable from the other.
+    fused = {candidate["chunk_id"]: candidate for candidate in candidates}
+    kept = [
+        CandidateRef(
+            chunk_id=hit.chunk_id,
+            document_id=hit.document_id,
+            rank=position,
+            vector_rank=fused[hit.chunk_id]["vector_rank"],
+            lexical_rank=fused[hit.chunk_id]["lexical_rank"],
+            rerank_score=hit.score,
+        )
+        for position, hit in enumerate(reranked.hits, start=1)
+    ]
+
+    # The whole ranking before the floor, marked: the viewer shows what the floor
+    # discarded, not only its effect.
+    trace.record_output(
+        {
+            "floor": floor,
+            "fallback": False,
+            "kept": len(kept),
+            "ranked": [
+                {
+                    "chunk_id": str(hit.chunk_id),
+                    "rank": hit.rank,
+                    "fused_rank": hit.fused_rank,
+                    "score": hit.score,
+                    "kept": hit.score >= floor,
+                }
+                for hit in reranked.ranked
+            ],
+        }
+    )
+    if not kept:
+        log.info(
+            "rerank.floor_emptied",
+            query_id=str(state["query_id"]),
+            attempt=state["retrieval_attempts"] + 1,
+            scored=len(reranked.ranked),
+            floor=floor,
+        )
+    return {"candidates": kept}
+
+
+def _hybrid_hit(candidate: CandidateRef, chunk: HydratedChunk) -> HybridHit:
+    """What the reranker takes: a candidate reference plus its hydrated text."""
+    return HybridHit(
+        chunk_id=candidate["chunk_id"],
+        document_id=candidate["document_id"],
+        filename=chunk.filename,
+        content=chunk.content,
+        page_number=chunk.page_number,
+        chunk_index=chunk.chunk_index,
+        rank=candidate["rank"],
+        vector_rank=candidate["vector_rank"],
+        lexical_rank=candidate["lexical_rank"],
+    )
+
+
+def _rerank_fallback(
+    state: GraphState,
+    trace: TraceContext,
+    hits: list[HybridHit],
+    k: int,
+    exc: RerankError,
+) -> dict[str, Any]:
+    """Keep fusion order with the floor unapplied, and mark the row degraded.
+
+    The node's decision, not an error (ADR 0011): the query proceeds, because
+    rerank buys precision and cost rather than groundedness, and tau still
+    decides at `verify_grounding`. What it costs is the measurement — a run that
+    skipped rerank is not measuring the optimized path, so `fallback` on this row
+    is what excludes the whole query from every eval and benchmark aggregate.
+
+    No usage: no model ran.
+    """
+    kept = [
+        CandidateRef(
+            chunk_id=hit.chunk_id,
+            document_id=hit.document_id,
+            rank=position,
+            vector_rank=hit.vector_rank,
+            lexical_rank=hit.lexical_rank,
+            # Unscored, not zero: nothing scored it.
+            rerank_score=None,
+        )
+        for position, hit in enumerate(hits[:k], start=1)
+    ]
+    trace.record_output(
+        {
+            "fallback": True,
+            "reason": "rerank_error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "kept": len(kept),
+            "ranked": [
+                {
+                    "chunk_id": str(candidate["chunk_id"]),
+                    "rank": candidate["rank"],
+                    "fused_rank": candidate["rank"],
+                    "score": None,
+                    "kept": True,
+                }
+                for candidate in kept
+            ],
+        }
+    )
+    log.warning(
+        "rerank.fallback",
+        query_id=str(state["query_id"]),
+        attempt=state["retrieval_attempts"] + 1,
+        candidates=len(kept),
+        error=str(exc),
+    )
+    return {"candidates": kept}
 
 
 @traced("generate", attempts="grounding_attempts")

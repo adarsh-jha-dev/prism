@@ -29,16 +29,24 @@ def monotonic(current: int, incoming: int) -> int:
 
 
 class SearchParams(TypedDict):
-    """What `plan_query` resolved retrieval to run with.
+    """What `plan_query` resolved this run to retrieve and correct with.
 
     In state rather than read from `Settings` per node, so a fork runs the
-    parameters the original run used.
+    parameters the original run used (ADR 0017).
+
+    Model names are not here by choice: which model answers is the cost-aware
+    router's decision, taken per call (Phase 3).
     """
 
     k: int
     candidate_k: int
     rrf_k: int
+    # The fused pool `rerank` scores, before it cuts to `k` (ADR 0020).
+    rerank_candidate_k: int
     rerank_score_floor: float
+    # Read by `grade_docs` and by `after_grade_docs`. Not widths, same argument.
+    doc_relevance_threshold: float
+    max_attempts: int
 
 
 def search_params_from(settings: Settings) -> SearchParams:
@@ -47,15 +55,21 @@ def search_params_from(settings: Settings) -> SearchParams:
         k=settings.retrieval_top_k,
         candidate_k=settings.retrieval_candidate_k,
         rrf_k=settings.rrf_k,
+        rerank_candidate_k=settings.rerank_candidate_k,
         rerank_score_floor=settings.rerank_score_floor,
+        doc_relevance_threshold=settings.doc_relevance_threshold,
+        max_attempts=settings.max_attempts,
     )
 
 
 class CandidateRef(TypedDict):
-    """One fused candidate, by reference.
+    """One candidate, by reference.
 
-    Positions, never a fused magnitude (ADR 0010). Chunk text is hydrated by id
-    where it is needed.
+    Fusion positions carry no magnitude (ADR 0010). `rerank_score` is the first
+    real one in the pipeline: `retrieve` writes None, `rerank` fills it in, and
+    generation and `query_citations.rerank_score` read it from here.
+
+    Chunk text is hydrated by id where it is needed.
     """
 
     chunk_id: UUID
@@ -63,6 +77,7 @@ class CandidateRef(TypedDict):
     rank: int
     vector_rank: int | None
     lexical_rank: int | None
+    rerank_score: float | None
 
 
 class GraphState(TypedDict):

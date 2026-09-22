@@ -128,6 +128,37 @@ async def test_the_nodes_that_call_a_model_leave_a_meter(run: QueryRun) -> None:
 
 @pytest.mark.integration
 @pytest.mark.ollama
+@pytest.mark.reranker
+async def test_rerank_runs_the_real_cross_encoder_and_records_what_it_scored(
+    run: QueryRun,
+) -> None:
+    """The stubbed tests prove the wiring; this proves the wiring reaches a model.
+
+    A fallback here would pass every other assertion in this module silently —
+    the node degrades rather than raising — so `fallback` is the assertion.
+    """
+    row = (await _traces(run.query_id))["rerank"]
+    assert row["status"] == "ok", row["error"]
+    assert row["output_json"]["fallback"] is False
+
+    assert row["model"] == get_settings().reranker_model
+    assert row["provider"] == "in-process"
+    assert row["billing_unit"] == "none"
+    # No meter, but a real price row at zero (ADR 0013).
+    assert row["price_id"] is not None
+    assert row["cost_usd"] == Decimal(0)
+    assert row["input_tokens"] is None and row["output_tokens"] is None
+    assert row["gpu_ms"] is None
+
+    scores = [entry["score"] for entry in row["output_json"]["ranked"]]
+    assert scores
+    # The sigmoid, not the raw logit — 0.44 is only meaningful against it.
+    assert all(0.0 <= score <= 1.0 for score in scores)
+    assert scores == sorted(scores, reverse=True)
+
+
+@pytest.mark.integration
+@pytest.mark.ollama
 async def test_embed_query_prices_to_exactly_zero_against_a_real_price_row(
     run: QueryRun,
 ) -> None:
@@ -195,7 +226,10 @@ async def test_plan_query_records_the_terms_and_the_parameters_it_pinned(
         "k": settings.retrieval_top_k,
         "candidate_k": settings.retrieval_candidate_k,
         "rrf_k": settings.rrf_k,
+        "rerank_candidate_k": settings.rerank_candidate_k,
         "rerank_score_floor": settings.rerank_score_floor,
+        "doc_relevance_threshold": settings.doc_relevance_threshold,
+        "max_attempts": settings.max_attempts,
     }
     terms = row["output_json"]["terms"]
     assert isinstance(terms, list)
@@ -210,7 +244,9 @@ async def test_retrieve_records_ids_and_positions_and_no_chunk_text(
 ) -> None:
     row = (await _traces(run.query_id))["retrieve"]
 
-    assert row["input_json"]["k"] == get_settings().retrieval_top_k
+    settings = get_settings()
+    # The pool rerank scores, not the final k (ADR 0020).
+    assert row["input_json"]["pool"] == max(settings.retrieval_top_k, settings.rerank_candidate_k)
     assert row["input_json"]["retrieval_query"] == QUESTION
     assert "terms" in row["input_json"]
 
@@ -223,6 +259,7 @@ async def test_retrieve_records_ids_and_positions_and_no_chunk_text(
             "rank",
             "vector_rank",
             "lexical_rank",
+            "rerank_score",
         }
         UUID(candidate["chunk_id"])
     assert [c["rank"] for c in candidates] == list(range(1, len(candidates) + 1))
