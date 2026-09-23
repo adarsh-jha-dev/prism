@@ -122,6 +122,10 @@ async def run_query(*, tenant_id: UUID, collection_id: UUID, question: str) -> Q
         "search_params": search_params_from(get_settings()),
         "query_embedding": None,
         "candidates": [],
+        # `generate` writes these; nothing persists them until `verify_grounding`
+        # passes an answer (ADR 0021). Seeded rather than absent, as above.
+        "answer": None,
+        "citations": [],
         "status": "refused",
         "refusal_reason": "no_relevant_evidence",
     }

@@ -63,6 +63,7 @@ class StubbedModels(Protocol):
         plan: "str | Sequence[str]" = ...,
         grade: "str | Sequence[str]" = ...,
         rewrite: "str | Sequence[str]" = ...,
+        answer: "str | Sequence[str]" = ...,
         reranker: "StubReranker | None" = ...,
     ) -> "ScriptedChat": ...
 
@@ -92,6 +93,11 @@ def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> "StubbedModels":
         plan: "str | Sequence[str]" = '{"terms": ["chinchilla", "ratio"]}',
         grade: "str | Sequence[str]" = '{"verdicts": [{"label": 1, "score": 0.9}]}',
         rewrite: "str | Sequence[str]" = '{"query": "rewritten query"}',
+        # Marked and listed, so the default run generates a bound answer. It
+        # still refuses: `verify_grounding` is a stub (ADR 0021).
+        answer: "str | Sequence[str]" = (
+            '{"answer": "Twenty tokens per parameter [1].", "citations": [{"label": 1}]}'
+        ),
         reranker: "StubReranker | None" = None,
     ) -> "ScriptedChat":
         # Well clear of rerank_score_floor: a test about the loop should not have
@@ -99,7 +105,12 @@ def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> "StubbedModels":
         scorer = reranker or StubReranker(default=0.9)
         monkeypatch.setattr("prism.graph.nodes.get_reranker", lambda: scorer)
         chat = ScriptedChat(
-            {"QueryPlan": plan, "RelevanceVerdicts": grade, "QueryRewrite": rewrite}
+            {
+                "QueryPlan": plan,
+                "RelevanceVerdicts": grade,
+                "QueryRewrite": rewrite,
+                "GroundedAnswer": answer,
+            }
         )
         lane = Lane(
             name="ollama",

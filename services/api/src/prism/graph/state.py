@@ -11,6 +11,7 @@ from prism.config import Settings
 
 __all__ = [
     "CandidateRef",
+    "CitationRef",
     "GraphState",
     "RefusalReason",
     "SearchParams",
@@ -80,6 +81,28 @@ class CandidateRef(TypedDict):
     rerank_score: float | None
 
 
+class CitationRef(TypedDict):
+    """One citation, as `generate` bound it and finalization will persist it.
+
+    `content` is the passage text the model was actually shown — the one place
+    state holds chunk text rather than a reference, and a deliberate exception to
+    ADR 0017 §2 (ADR 0021). Re-hydrating it at finalization would snapshot
+    whatever the chunk says by then, which is not what was cited.
+
+    `label` is the number the prompt showed the passage under, kept so a marker
+    in the answer resolves to exactly one of these rows.
+    """
+
+    label: int
+    chunk_id: UUID
+    document_id: UUID
+    page_number: int | None
+    chunk_index: int | None
+    rank: int
+    rerank_score: float | None
+    content: str
+
+
 class GraphState(TypedDict):
     query_id: UUID
     tenant_id: UUID
@@ -108,6 +131,14 @@ class GraphState(TypedDict):
     search_params: SearchParams
     query_embedding: list[float] | None
     candidates: list[CandidateRef]
+
+    # What `generate` produced, and what it bound the answer to. Held here and
+    # written once at finalization, so a generation `verify_grounding` rejects
+    # leaves no citation rows behind (ADR 0021). Both are replaced per grounding
+    # attempt, and a generation that grounds nothing clears them rather than
+    # leaving the previous attempt's answer standing.
+    answer: str | None
+    citations: list[CitationRef]
 
     status: TerminalStatus
     refusal_reason: RefusalReason | None
