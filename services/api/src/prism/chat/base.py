@@ -1,11 +1,15 @@
 """The chat provider interface, and the usage record every call returns.
 
-Two call shapes, because the graph needs both. `complete` produces prose —
-`generate` is its only caller. `structured` returns a parsed, validated model:
-`grade_docs`, `rewrite_query` and `verify_grounding` return verdicts, and a
-grader that returns prose has failed rather than degraded, so a response that
-does not parse or does not validate raises here instead of reaching a caller
-that would have to re-check it.
+Two call shapes. `structured` returns a parsed, validated model and is what
+every node in the graph calls, `generate` included: its answer carries a citation
+list that has to validate, and a citation list parsed out of prose afterwards is
+post-hoc matching (ADR 0021). A grader or a generator that returns prose where a
+schema was asked for has failed rather than degraded, so a response that does not
+parse or does not validate raises here instead of reaching a caller that would
+have to re-check it.
+
+`complete` produces unconstrained prose. No graph node calls it; it is the shape
+the benchmark's single-shot baseline needs, which cites nothing by construction.
 
 There is deliberately no streaming variant. `generate`'s output is not an answer
 until `verify_grounding` passes it, and a failed verification regenerates or

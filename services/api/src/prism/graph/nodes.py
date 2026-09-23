@@ -1,9 +1,9 @@
 """The graph's nodes.
 
 The retrieval loop is implemented — `plan_query`, `embed_query`, `retrieve`,
-`rerank`, `grade_docs`, `rewrite_query` and `abstain`. `generate` and
-`verify_grounding` are still stubs writing one trace row each, so the pass path
-runs through them and refuses at `abstain` for want of a citation.
+`rerank`, `grade_docs`, `rewrite_query` and `abstain` — and so is `generate`.
+`verify_grounding` is still a stub, so the pass path runs through it and refuses
+at `abstain`: an answer nothing has verified reaches nobody (ADR 0021).
 
 `rerank` sits between `retrieve` and `grade_docs` (ADR 0020): it scores the
 fused pool and cuts it to `k`, so the grader judges only what the floor kept.
@@ -16,6 +16,7 @@ copies (ADR 0012), and call models through the registry (ADR 0018).
 """
 
 import math
+import re
 import time
 from typing import Any
 from uuid import UUID
@@ -28,6 +29,7 @@ from prism.chat.base import Usage
 from prism.config import get_settings
 from prism.graph.state import (
     CandidateRef,
+    CitationRef,
     GraphState,
     RefusalReason,
     search_params_from,
@@ -41,6 +43,8 @@ from prism.retrieval.rerank import rerank as rerank_hits
 
 __all__ = [
     "ChunkRelevance",
+    "Citation",
+    "GroundedAnswer",
     "QueryPlan",
     "QueryRewrite",
     "RelevanceVerdicts",
@@ -57,7 +61,9 @@ __all__ = [
 
 log = structlog.get_logger(__name__)
 
-# `generate`'s lane is the Phase 3 router's decision.
+# `generate` calls the local lane and only the local lane. Which provider answers
+# is the Phase 3 router's decision, taken on cost and latency; nothing here
+# chooses one.
 _LOCAL_LANE = "ollama"
 # Not a registry lane: the reranker runs in this process and reports no Usage of
 # its own. The name is what `model_pricing` prices it under (ADR 0013).
@@ -96,6 +102,24 @@ _REWRITER_SYSTEM = (
 
 _REWRITER_MAX_TOKENS = 200
 
+_GENERATOR_SYSTEM = (
+    "You answer strictly from the numbered passages. Mark every claim with the "
+    "label of the passage that supports it, written as [1], and list those same "
+    "labels in citations. Never cite a label that is not among the passages, "
+    "never use outside knowledge to fill a gap, and never offer a plausible "
+    "guess in place of evidence. If the passages do not support an answer, say "
+    "so plainly and cite nothing: that is a correct answer, not a failure."
+)
+
+# Prose, so wider than the graders. Still a ceiling: an answer running past this
+# is not summarizing the passages it was given.
+_GENERATOR_MAX_TOKENS = 800
+
+# What counts as an inline citation marker. Only a bracketed number **shown in
+# this prompt** is one: with five passages, an answer that legitimately contains
+# "[20]" keeps it as prose rather than having it read as a citation (ADR 0021).
+_MARKER = re.compile(r"\[(\d+)\]")
+
 
 class QueryPlan(BaseModel):
     terms: list[str] = Field(default_factory=list)
@@ -122,6 +146,29 @@ class RelevanceVerdicts(BaseModel):
 
 class QueryRewrite(BaseModel):
     query: str = ""
+
+
+class Citation(BaseModel):
+    """One source the answer draws on, keyed by the label the prompt showed it under.
+
+    An object rather than a bare int so that citation character offsets — a known
+    gap in `REVIEW.md` — arrive as fields here rather than as a second list that
+    can disagree with this one.
+    """
+
+    label: int
+
+
+class GroundedAnswer(BaseModel):
+    # No `min_length` on `citations`, unlike `RelevanceVerdicts`. A grader always
+    # has passages to score, so an empty list there is the model taking the
+    # cheapest completion that validates. Generation is different: a model
+    # correctly reporting that the passages do not cover the question has nothing
+    # to cite, and a schema that forced it would manufacture the binding this node
+    # exists to establish (ADR 0021). An answer that cites nothing is an outcome,
+    # handled below.
+    answer: str
+    citations: list[Citation] = Field(default_factory=list)
 
 
 @traced("plan_query", attempts="retrieval_attempts")
@@ -349,12 +396,19 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     return {"retrieval_attempts": attempt, "candidates": kept}
 
 
+def _numbered_passages(chunks: list[HydratedChunk]) -> str:
+    """The passages, numbered from 1. The label is the handle everything downstream uses.
+
+    One function for the grader and the generator, so the shape a verdict comes
+    back keyed by is the shape a citation comes back keyed by (ADR 0021). Two
+    prompts numbering passages their own way would drift, and the drift would
+    show up as citations pointing at the wrong chunk.
+    """
+    return "\n\n".join(f"[{label}] {chunk.content}" for label, chunk in enumerate(chunks, start=1))
+
+
 def _grading_prompt(question: str, chunks: list[HydratedChunk]) -> str:
-    """The candidates, numbered. The label is what a verdict comes back keyed by."""
-    passages = "\n\n".join(
-        f"[{label}] {chunk.content}" for label, chunk in enumerate(chunks, start=1)
-    )
-    return f"Question:\n{question}\n\nPassages:\n{passages}"
+    return f"Question:\n{question}\n\nPassages:\n{_numbered_passages(chunks)}"
 
 
 def _scores_by_chunk(verdicts: RelevanceVerdicts, chunks: list[HydratedChunk]) -> dict[UUID, float]:
@@ -612,7 +666,171 @@ def _rerank_fallback(
 
 @traced("generate", attempts="grounding_attempts")
 async def generate(state: GraphState, trace: TraceContext) -> dict[str, Any]:
-    return {}
+    """Answer from the surviving evidence, and bind every claim to the chunk behind it.
+
+    Answers `question`, never `retrieval_query`: generation is judged against
+    what the user submitted, and a rewriter that drifted must not get to define
+    the question it is answered on (ADR 0019).
+
+    One structured call, on the local lane. The citation list has to validate, and
+    a list parsed out of prose afterwards is post-hoc matching — which would put
+    cosine similarity back in the evidence path, where `CLAUDE.md` forbids it.
+
+    Nothing here finalizes anything. `verdict` stays NULL because this node has an
+    outcome and no judgement (migration 0009), `grounding_attempts` stays where it
+    was because the gate increments it, and the answer stays in state until
+    `verify_grounding` passes it (ADR 0021).
+    """
+    settings = get_settings()
+    # Rerank order, explicitly, rather than inherited from whatever order the
+    # upstream nodes happened to leave: `rank` is the position `rerank` assigned
+    # by score, and the labels the model sees are that order.
+    candidates = sorted(state["candidates"], key=lambda candidate: candidate["rank"])
+    trace.record_input(
+        {
+            "candidates": [
+                {"chunk_id": str(c["chunk_id"]), "rerank_score": c["rerank_score"]}
+                for c in candidates
+            ]
+        }
+    )
+
+    if not candidates:
+        # Only reachable on a fork resumed here: `after_grade_docs` routes an
+        # empty set back round the loop. No call — a model asked to answer from
+        # nothing answers from itself.
+        return _ungrounded(trace, reason="no_candidates")
+
+    chunks = await hydrate_chunks(
+        [candidate["chunk_id"] for candidate in candidates],
+        tenant_id=state["tenant_id"],
+        collection_id=state["collection_id"],
+    )
+    if not chunks:
+        # Deleted or re-ingested since retrieval (ADR 0017). Nothing to show the
+        # model, and nothing that could be cited if it answered anyway.
+        return _ungrounded(trace, reason="no_hydrated_chunks")
+
+    result = await get_registry().structured(
+        _LOCAL_LANE,
+        [
+            Message(role="system", content=_GENERATOR_SYSTEM),
+            Message(
+                role="user",
+                content=f"Question:\n{state['question']}\n\n"
+                f"Passages:\n{_numbered_passages(chunks)}",
+            ),
+        ],
+        GroundedAnswer,
+        model=settings.generator_model,
+        max_tokens=_GENERATOR_MAX_TOKENS,
+    )
+    trace.record_usage(result.usage)
+
+    answer = result.value.answer.strip()
+    citations, dropped = _bind_citations(result.value, chunks, candidates)
+
+    if not answer:
+        # The call succeeded and the schema validated, so this is an outcome and
+        # the row stays `ok` (ADR 0021). `error` would claim a failure that did
+        # not happen, and migration 0009 would want error text we do not have.
+        return _ungrounded(trace, reason="empty_answer", dropped=dropped)
+    if not citations:
+        # Either the model cited nothing, or everything it cited was fabricated.
+        # Either way there is no binding, so there is no answer to carry: the run
+        # refuses rather than passing prose to a verifier as if it had evidence.
+        return _ungrounded(trace, reason="no_valid_citations", dropped=dropped)
+
+    # Lengths and labels, never the answer text: that belongs on
+    # `queries.final_answer`, written once at finalization (ADR 0012).
+    trace.record_output(
+        {
+            "answer_length": len(answer),
+            "passages": len(chunks),
+            "cited_labels": [citation["label"] for citation in citations],
+            "cited_chunk_ids": [str(citation["chunk_id"]) for citation in citations],
+            "dropped_labels": dropped,
+        }
+    )
+    if dropped:
+        log.warning(
+            "generate.fabricated_citation",
+            query_id=str(state["query_id"]),
+            attempt=state["grounding_attempts"] + 1,
+            labels=dropped,
+            passages=len(chunks),
+        )
+    return {"answer": answer, "citations": citations}
+
+
+def _ungrounded(
+    trace: TraceContext, *, reason: str, dropped: list[int] | None = None
+) -> dict[str, Any]:
+    """A generation that bound nothing: no answer leaves this node.
+
+    Clears both channels rather than returning nothing. Once the grounding loop
+    exists, a later attempt that grounds nothing must not leave the previous
+    attempt's answer standing for finalization to find (ADR 0021).
+    """
+    trace.record_output(
+        {
+            "reason": reason,
+            "answer_length": 0,
+            "cited_labels": [],
+            "dropped_labels": dropped or [],
+        }
+    )
+    return {"answer": None, "citations": []}
+
+
+def _bind_citations(
+    produced: GroundedAnswer,
+    chunks: list[HydratedChunk],
+    candidates: list[CandidateRef],
+) -> tuple[list[CitationRef], list[int]]:
+    """Reconcile the answer's markers and its citation list against what was shown.
+
+    A label the passage set never held is a fabricated chunk id — one of the
+    injection categories this project tests for — so it is dropped here and never
+    reaches a row. The prose is left exactly as the model wrote it: a bracket that
+    resolves to nothing renders as prose and the dropped label is named on the
+    trace row, which is a better record than an audit trail that edits its subject.
+
+    The two directions are deliberately asymmetric (ADR 0021). A marker on a real
+    passage that the list omits is admitted, because the passage was shown and
+    admitting it fabricates nothing. A listed label with no marker is kept, which
+    is what saves an answer whose prose came back clean but unmarked.
+
+    Returns the citations in label order — which is rerank order, since that is
+    how the passages were numbered — and the labels that were dropped.
+    """
+    shown = dict(enumerate(chunks, start=1))
+    by_id = {candidate["chunk_id"]: candidate for candidate in candidates}
+
+    marked = {int(label) for label in _MARKER.findall(produced.answer)} & shown.keys()
+    listed = {citation.label for citation in produced.citations}
+
+    dropped = sorted(listed - shown.keys())
+    cited = sorted(marked | (listed & shown.keys()))
+
+    return [
+        CitationRef(
+            label=label,
+            chunk_id=shown[label].chunk_id,
+            document_id=shown[label].document_id,
+            page_number=shown[label].page_number,
+            chunk_index=shown[label].chunk_index,
+            # Dense from 1 in citation order, not the candidate's rank: it becomes
+            # `query_citations.rank`, which is unique per query and checked >= 1.
+            rank=rank,
+            rerank_score=by_id[shown[label].chunk_id]["rerank_score"],
+            # The text as the model was shown it. Snapshotted here rather than
+            # re-read at finalization, which would record whatever the chunk says
+            # by then (ADR 0021).
+            content=shown[label].content,
+        )
+        for rank, label in enumerate(cited, start=1)
+    ], dropped
 
 
 @traced("verify_grounding", attempts="grounding_attempts")

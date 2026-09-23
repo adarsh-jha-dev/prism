@@ -78,6 +78,6 @@ asyncio_mode = "auto"
 addopts = "-q --strict-markers"
 markers = [
     "integration: requires docker compose services (deselect with -m 'not integration')",
-    "ollama: additionally requires a local Ollama with the embedding and vision models pulled",
+    "ollama: additionally requires a local Ollama with the embedding, vision and generator models pulled",
     "reranker: requires the reranker weights (`make reranker-fetch`)",
 ]

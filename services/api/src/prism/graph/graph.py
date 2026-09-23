@@ -1,9 +1,9 @@
 """StateGraph assembly.
 
 One conditional edge so far: `grade_docs` either passes to `generate` or sends
-the run back around the retrieval loop. The pass path still runs through stub
-nodes and ends at `abstain`, because an answer needs citations it cannot yet
-produce.
+the run back around the retrieval loop. `generate` produces a real answer bound
+to real citations, and the pass path still ends at `abstain`, because
+`verify_grounding` is a stub and an answer nothing has verified reaches nobody.
 
 `rerank` sits between `retrieve` and `grade_docs` (ADR 0020), inside the loop.
 It needs no conditional edge of its own: a set its floor empties reaches
@@ -79,9 +79,9 @@ def build_graph() -> StateGraph[GraphState, None, GraphState, GraphState]:
     )
     builder.add_edge("rewrite_query", "plan_query")
 
-    # The pass path, still stubs. It reaches `abstain` rather than END: an
-    # answer with no citations cannot be persisted (ADR 0012), so there is
-    # nowhere here that finalizes as answered.
+    # The pass path reaches `abstain` rather than END: `verify_grounding` is the
+    # gate, it is still a stub, and an unverified answer must not finalize as one
+    # (ADR 0021). `generate`'s answer and citations sit in state and go nowhere.
     builder.add_edge("generate", "verify_grounding")
     builder.add_edge("verify_grounding", "abstain")
 
