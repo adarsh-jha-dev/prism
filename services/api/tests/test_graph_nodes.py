@@ -229,6 +229,9 @@ async def test_plan_query_records_the_terms_and_the_parameters_it_pinned(
         "rerank_candidate_k": settings.rerank_candidate_k,
         "rerank_score_floor": settings.rerank_score_floor,
         "doc_relevance_threshold": settings.doc_relevance_threshold,
+        # The collection's own tau, not the configured default — this fixture's
+        # collection takes the column default, so here they agree (ADR 0022).
+        "abstention_threshold": settings.abstention_threshold,
         "max_attempts": settings.max_attempts,
     }
     terms = row["output_json"]["terms"]

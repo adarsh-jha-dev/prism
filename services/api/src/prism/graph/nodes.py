@@ -1,9 +1,9 @@
 """The graph's nodes.
 
-The retrieval loop is implemented — `plan_query`, `embed_query`, `retrieve`,
-`rerank`, `grade_docs`, `rewrite_query` and `abstain` — and so is `generate`.
-`verify_grounding` is still a stub, so the pass path runs through it and refuses
-at `abstain`: an answer nothing has verified reaches nobody (ADR 0021).
+Both correction loops are implemented. The retrieval loop is `plan_query`,
+`embed_query`, `retrieve`, `rerank`, `grade_docs` and `rewrite_query`; the
+grounding loop is `generate` and `verify_grounding`, the gate that opens the
+only path to `answered` (ADR 0022). `abstain` ends the rest.
 
 `rerank` sits between `retrieve` and `grade_docs` (ADR 0020): it scores the
 fused pool and cuts it to `k`, so the grader judges only what the floor kept.
@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from prism.chat import Message
 from prism.chat.base import Usage
+from prism.collections import abstention_threshold_for
 from prism.config import get_settings
 from prism.graph.state import (
     CandidateRef,
@@ -45,9 +46,11 @@ __all__ = [
     "ChunkRelevance",
     "Citation",
     "GroundedAnswer",
+    "GroundingVerdicts",
     "QueryPlan",
     "QueryRewrite",
     "RelevanceVerdicts",
+    "SpanGroundedness",
     "abstain",
     "embed_query",
     "generate",
@@ -115,6 +118,36 @@ _GENERATOR_SYSTEM = (
 # is not summarizing the passages it was given.
 _GENERATOR_MAX_TOKENS = 800
 
+_REGENERATION_PREFACE = (
+    "Your previous answer was rejected: the claims below were not supported by "
+    "the passages. Answer again from the passages alone. Drop every claim they "
+    "do not state, and if what remains does not answer the question, say so "
+    "plainly and cite nothing."
+)
+
+_VERIFIER_SYSTEM = (
+    "You judge whether each numbered claim is supported by the numbered "
+    "passages. Claims are numbered (1), (2); passages are numbered [1], [2]. "
+    "Score every claim from 0 to 1 by how fully the passages state it, and "
+    "return its number unchanged. A claim the passages do not state scores low, "
+    "even when it is plausible and even when it is true. Judge only what the "
+    "passages say: never use outside knowledge, and never reward a claim for "
+    "being well written. Return one entry per claim."
+)
+
+# Wider than the grader's: an answer has more claims than a pool has passages.
+_VERIFIER_MAX_TOKENS = 600
+
+# A sentence ends at .!? followed by whitespace and the start of the next one —
+# a capital, a quote, a bracket. Never before a digit: "0.58" and "approx. 20"
+# are one claim, and a system whose answers are mostly numbers cannot afford a
+# splitter that reads a decimal point as a claim boundary (ADR 0022).
+_SENTENCE_END = re.compile(r'(?<=[.!?])\s+(?=[A-Z"\'\[(])')
+
+# Below this, a span is a fragment rather than a claim. Merged into its
+# neighbour instead of judged alone, so a bad split cannot refuse a sound answer.
+_MIN_SPAN_CHARS = 24
+
 # What counts as an inline citation marker. Only a bracketed number **shown in
 # this prompt** is one: with five passages, an answer that legitimately contains
 # "[20]" keeps it as prose rather than having it read as a citation (ADR 0021).
@@ -142,6 +175,21 @@ class RelevanceVerdicts(BaseModel):
     # It is also the honest contract: a grader scores every passage, and a
     # passage it finds irrelevant scores low rather than going unmentioned.
     verdicts: list[ChunkRelevance] = Field(min_length=1)
+
+
+class SpanGroundedness(BaseModel):
+    """One claim's score, keyed by the label the prompt numbered it with."""
+
+    label: int
+    score: float
+
+
+class GroundingVerdicts(BaseModel):
+    # min_length for `RelevanceVerdicts`' reason: without it the cheapest
+    # completion that validates is `{"verdicts": []}`, and a verifier always has
+    # claims to score. Every span would then fail for want of a verdict, which
+    # refuses in the right direction for entirely the wrong reason.
+    verdicts: list[SpanGroundedness] = Field(min_length=1)
 
 
 class QueryRewrite(BaseModel):
@@ -181,7 +229,8 @@ async def plan_query(state: GraphState, trace: TraceContext) -> dict[str, Any]:
 
     Parameters are pinned so a fork retrieves and corrects as the original run
     did (ADR 0017), which means later passes must not re-pin: a second execution
-    would re-read `Settings`.
+    would re-read `Settings`. tau is pinned with them, from the collection — the
+    one policy constant a tenant sets per collection (ADR 0022).
     """
     settings = get_settings()
     result = await get_registry().structured(
@@ -200,8 +249,20 @@ async def plan_query(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     update: dict[str, Any] = {"search_terms": terms}
 
     pinned = state["retrieval_attempts"] == 0
-    params = search_params_from(settings) if pinned else state["search_params"]
+    params = state["search_params"]
     if pinned:
+        # One keyed read under the tenant predicate, in a node that has just
+        # made a 14b call. Unreadable falls back to `Settings` rather than
+        # failing the run: `queries` holds a composite FK to `collections`, so
+        # this is a defensive default, not a supported configuration.
+        tau = await abstention_threshold_for(state["collection_id"], tenant_id=state["tenant_id"])
+        if tau is None:
+            log.warning(
+                "plan_query.collection_tau_unreadable",
+                query_id=str(state["query_id"]),
+                collection_id=str(state["collection_id"]),
+            )
+        params = search_params_from(settings, abstention_threshold=tau)
         update["search_params"] = params
 
     trace.record_input({"retrieval_query": state["retrieval_query"]})
@@ -325,6 +386,10 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     Closes the attempt by incrementing `retrieval_attempts`. The surviving
     candidates are the graph's pass/fail signal: nothing the grader rejected
     reaches `rerank`, `generate` or a citation.
+
+    Writes `verdict` — on its no-call paths too. An empty candidate set and a set
+    that hydrates to nothing are both judgements, and a NULL there would read as
+    a node with none to make (ADR 0022).
     """
     settings = get_settings()
     threshold = state["search_params"]["doc_relevance_threshold"]
@@ -334,6 +399,7 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     if not candidates:
         # Nothing to grade, and a grader asked to judge nothing invents a
         # verdict. No call, no meter, and a fail that costs nothing.
+        trace.record_verdict("fail")
         trace.record_input({"candidates": []})
         trace.record_output({"verdicts": [], "kept": 0, "reason": "no_candidates"})
         return {"retrieval_attempts": attempt}
@@ -348,6 +414,7 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
         # Retrieved ids that hydrate to nothing: deleted or re-ingested since
         # (ADR 0017). A fail, and still no call — so the set has to be cleared
         # here, or an unreadable candidate would read downstream as a pass.
+        trace.record_verdict("fail")
         trace.record_input({"candidates": [str(c["chunk_id"]) for c in candidates]})
         trace.record_output({"verdicts": [], "kept": 0, "reason": "no_hydrated_chunks"})
         return {"retrieval_attempts": attempt, "candidates": []}
@@ -378,6 +445,7 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     kept_ids = {v["chunk_id"] for v in verdicts if v["verdict"] == "pass"}
     kept = [candidate for candidate in candidates if candidate["chunk_id"] in kept_ids]
 
+    trace.record_verdict("pass" if kept else "fail")
     trace.record_input({"candidates": [str(c["chunk_id"]) for c in candidates]})
     trace.record_output(
         {
@@ -676,6 +744,11 @@ async def generate(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     a list parsed out of prose afterwards is post-hoc matching — which would put
     cosine similarity back in the evidence path, where `CLAUDE.md` forbids it.
 
+    On a retry it is told which claims the gate found unsupported, so a
+    regeneration is constrained by its own failure rather than being the same
+    call with a different seed (ADR 0022). Which provider answers is still not
+    decided here: escalation is the Phase 3 router's.
+
     Nothing here finalizes anything. `verdict` stays NULL because this node has an
     outcome and no judgement (migration 0009), `grounding_attempts` stays where it
     was because the gate increments it, and the answer stays in state until
@@ -686,12 +759,17 @@ async def generate(state: GraphState, trace: TraceContext) -> dict[str, Any]:
     # upstream nodes happened to leave: `rank` is the position `rerank` assigned
     # by score, and the labels the model sees are that order.
     candidates = sorted(state["candidates"], key=lambda candidate: candidate["rank"])
+    unsupported = state["unsupported_spans"]
     trace.record_input(
         {
             "candidates": [
                 {"chunk_id": str(c["chunk_id"]), "rerank_score": c["rerank_score"]}
                 for c in candidates
-            ]
+            ],
+            # The count, not the text: the claims themselves are on the previous
+            # attempt's `verify_grounding` row, which eval already addresses by
+            # (query_id, node_name, attempt).
+            "unsupported_spans": len(unsupported),
         }
     )
 
@@ -715,11 +793,7 @@ async def generate(state: GraphState, trace: TraceContext) -> dict[str, Any]:
         _LOCAL_LANE,
         [
             Message(role="system", content=_GENERATOR_SYSTEM),
-            Message(
-                role="user",
-                content=f"Question:\n{state['question']}\n\n"
-                f"Passages:\n{_numbered_passages(chunks)}",
-            ),
+            Message(role="user", content=_generation_prompt(state, chunks, unsupported)),
         ],
         GroundedAnswer,
         model=settings.generator_model,
@@ -761,6 +835,21 @@ async def generate(state: GraphState, trace: TraceContext) -> dict[str, Any]:
             passages=len(chunks),
         )
     return {"answer": answer, "citations": citations}
+
+
+def _generation_prompt(
+    state: GraphState, chunks: list[HydratedChunk], unsupported: list[str]
+) -> str:
+    """The question and the passages, plus what the last attempt got wrong.
+
+    The rejected claims go last, where a local model attends to them, and they
+    are the gate's own finding rather than a generic "be stricter" (ADR 0022).
+    """
+    prompt = f"Question:\n{state['question']}\n\nPassages:\n{_numbered_passages(chunks)}"
+    if not unsupported:
+        return prompt
+    rejected = "\n".join(f"- {span}" for span in unsupported)
+    return f"{prompt}\n\n{_REGENERATION_PREFACE}\n{rejected}"
 
 
 def _ungrounded(
@@ -835,7 +924,177 @@ def _bind_citations(
 
 @traced("verify_grounding", attempts="grounding_attempts")
 async def verify_grounding(state: GraphState, trace: TraceContext) -> dict[str, Any]:
-    return {}
+    """Judge the answer against the evidence it cited. The only node that reads tau.
+
+    tau is compared against one quantity and one only: the groundedness score
+    this call produces. Never a cosine similarity, never a rerank score — they
+    share a 0-1 scale and nothing else (CLAUDE.md, ADR 0022). The value is the
+    run's pinned one, so a fork verifies at the bar the original run used.
+
+    Judged against the citations, not every candidate that survived grading. An
+    answer is grounded in what it cited, and the cited text is already in state
+    as the model was shown it (ADR 0021) — so there is no read here to drift
+    under the judgement.
+
+    Closes the attempt by incrementing `grounding_attempts`, as `grade_docs`
+    does for the retrieval loop. The two counters are independent and neither
+    borrows the other's budget.
+
+    On a pass it writes `status`, which is what the edge routes on: the node that
+    judged is the node that recorded it. On a fail it writes the claims that
+    failed, for the next `generate` to answer under.
+    """
+    settings = get_settings()
+    tau = state["search_params"]["abstention_threshold"]
+    attempt = state["grounding_attempts"] + 1
+    answer, citations = state["answer"], state["citations"]
+
+    trace.record_input(
+        {
+            "tau": tau,
+            "cited_labels": [citation["label"] for citation in citations],
+            "cited_chunk_ids": [str(citation["chunk_id"]) for citation in citations],
+        }
+    )
+
+    if not answer or not citations:
+        # `generate` clears both when it binds nothing, and an answer that cited
+        # nothing has no evidence to be judged against. A fail, and no call: a
+        # verifier handed no passages invents a verdict.
+        reason = "no_answer" if not answer else "no_citations"
+        return _unverified(trace, attempt, tau, reason=reason)
+
+    spans = _spans(answer)
+    if not spans:
+        return _unverified(trace, attempt, tau, reason="no_spans")
+
+    result = await get_registry().structured(
+        _LOCAL_LANE,
+        [
+            Message(role="system", content=_VERIFIER_SYSTEM),
+            Message(
+                role="user",
+                content=_verification_prompt(state["question"], citations, spans),
+            ),
+        ],
+        GroundingVerdicts,
+        model=settings.grader_model,
+        max_tokens=_VERIFIER_MAX_TOKENS,
+    )
+    trace.record_usage(result.usage)
+
+    scores = _scores_by_span(result.value, spans)
+    labels = range(1, len(spans) + 1)
+    # The minimum, not the mean: `answered` claims every span is grounded, and a
+    # mean lets one fabricated sentence hide behind four sound ones — which is
+    # the exact signature of the injections this project counts (ADR 0022).
+    groundedness = min(scores.get(label) or 0.0 for label in labels)
+    unsupported = [
+        span for label, span in enumerate(spans, start=1) if (scores.get(label) or 0.0) < tau
+    ]
+    grounded = not unsupported
+
+    trace.record_verdict("pass" if grounded else "fail")
+    trace.record_output(
+        {
+            # The span text, which is the one place answer text reaches a trace
+            # payload. A rejected attempt never reaches `queries.final_answer`,
+            # so this row is the only record of what the run refused to say.
+            "spans": [
+                {
+                    "label": label,
+                    "span": span,
+                    "score": scores.get(label),
+                    # Derived from the one threshold, so the verifier cannot
+                    # both score 0.9 and call a claim unsupported.
+                    "verdict": "pass" if (scores.get(label) or 0.0) >= tau else "fail",
+                }
+                for label, span in enumerate(spans, start=1)
+            ],
+            "groundedness": groundedness,
+            "tau": tau,
+            "unsupported": len(unsupported),
+        }
+    )
+
+    if not grounded:
+        log.info(
+            "verify_grounding.ungrounded",
+            query_id=str(state["query_id"]),
+            attempt=attempt,
+            groundedness=groundedness,
+            tau=tau,
+            unsupported=len(unsupported),
+        )
+        return {"grounding_attempts": attempt, "unsupported_spans": unsupported}
+
+    return {
+        "grounding_attempts": attempt,
+        "unsupported_spans": [],
+        "status": "answered",
+        "refusal_reason": None,
+    }
+
+
+def _unverified(trace: TraceContext, attempt: int, tau: float, *, reason: str) -> dict[str, Any]:
+    """A verification with nothing to verify: a fail, and no model call.
+
+    Clears the feedback rather than carrying the last attempt's. There is no
+    answer this attempt, so there are no claims of it to have failed, and the
+    only correction available is to generate again.
+    """
+    trace.record_verdict("fail")
+    trace.record_output(
+        {"spans": [], "groundedness": 0.0, "tau": tau, "unsupported": 0, "reason": reason}
+    )
+    return {"grounding_attempts": attempt, "unsupported_spans": []}
+
+
+def _spans(answer: str) -> list[str]:
+    """Split the answer into claims. Deterministic, and it never drops text.
+
+    Ours rather than the model's, for ADR 0021's reason one node later: a
+    model-chosen claim list is a paraphrase that cannot be aligned back to the
+    text we hold, so a claim quietly omitted from it is a claim never judged.
+    """
+    parts = [part.strip() for part in _SENTENCE_END.split(answer.strip()) if part.strip()]
+    merged: list[str] = []
+    for part in parts:
+        if merged and len(part) < _MIN_SPAN_CHARS:
+            merged[-1] = f"{merged[-1]} {part}"
+        else:
+            merged.append(part)
+    # A leading fragment has no previous span to join, so it takes the next one.
+    if len(merged) > 1 and len(merged[0]) < _MIN_SPAN_CHARS:
+        head = merged.pop(0)
+        merged[0] = f"{head} {merged[0]}"
+    return merged
+
+
+def _verification_prompt(question: str, citations: list[CitationRef], spans: list[str]) -> str:
+    """Claims as (n), evidence as [n] — the labels `generate` showed.
+
+    Two numbering schemes in one prompt, deliberately different: the spans carry
+    the answer's own `[n]` markers, so a claim still points at the passage it
+    claims, and an 8b model is never asked which bracket means which.
+    """
+    passages = "\n\n".join(f"[{c['label']}] {c['content']}" for c in citations)
+    claims = "\n".join(f"({label}) {span}" for label, span in enumerate(spans, start=1))
+    return f"Question:\n{question}\n\nPassages:\n{passages}\n\nClaims:\n{claims}"
+
+
+def _scores_by_span(verdicts: GroundingVerdicts, spans: list[str]) -> dict[int, float]:
+    """Map labels back to spans. Out-of-range labels are dropped.
+
+    Keyed by label, never by position, for `_scores_by_chunk`'s reason. A span
+    with no verdict gets none and fails: an absent judgement is not evidence of
+    groundedness, and this is the node that must refuse when unsure.
+    """
+    return {
+        verdict.label: verdict.score
+        for verdict in verdicts.verdicts
+        if 1 <= verdict.label <= len(spans)
+    }
 
 
 @traced("abstain")

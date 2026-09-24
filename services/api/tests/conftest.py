@@ -64,6 +64,7 @@ class StubbedModels(Protocol):
         grade: "str | Sequence[str]" = ...,
         rewrite: "str | Sequence[str]" = ...,
         answer: "str | Sequence[str]" = ...,
+        verify: "str | Sequence[str]" = ...,
         reranker: "StubReranker | None" = ...,
     ) -> "ScriptedChat": ...
 
@@ -76,7 +77,8 @@ def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> "StubbedModels":
     tests/test_graph_nodes.py covers the live path.
 
     Calling the fixture re-scripts the replies; depending on it without calling
-    it takes the defaults, which pass the first candidate and rewrite once.
+    it takes the defaults, which pass the first candidate, rewrite once, and
+    verify the answer as grounded — so a default run finalizes as `answered`.
     """
     from prism.config import Settings
     from prism.providers import Lane, ProviderRegistry
@@ -93,11 +95,14 @@ def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> "StubbedModels":
         plan: "str | Sequence[str]" = '{"terms": ["chinchilla", "ratio"]}',
         grade: "str | Sequence[str]" = '{"verdicts": [{"label": 1, "score": 0.9}]}',
         rewrite: "str | Sequence[str]" = '{"query": "rewritten query"}',
-        # Marked and listed, so the default run generates a bound answer. It
-        # still refuses: `verify_grounding` is a stub (ADR 0021).
+        # Marked and listed, so the default run generates a bound answer.
         answer: "str | Sequence[str]" = (
             '{"answer": "Twenty tokens per parameter [1].", "citations": [{"label": 1}]}'
         ),
+        # One claim, well clear of tau: a test about the loop should not have to
+        # think about the threshold, and a test about the threshold scripts its
+        # own. The default answer is one sentence, so it is one span.
+        verify: "str | Sequence[str]" = '{"verdicts": [{"label": 1, "score": 0.95}]}',
         reranker: "StubReranker | None" = None,
     ) -> "ScriptedChat":
         # Well clear of rerank_score_floor: a test about the loop should not have
@@ -110,6 +115,7 @@ def stubbed_models(monkeypatch: pytest.MonkeyPatch) -> "StubbedModels":
                 "RelevanceVerdicts": grade,
                 "QueryRewrite": rewrite,
                 "GroundedAnswer": answer,
+                "GroundingVerdicts": verify,
             }
         )
         lane = Lane(

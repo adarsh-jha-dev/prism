@@ -23,6 +23,7 @@ __all__ = [
     "CollectionNotFoundError",
     "CollectionRef",
     "EmbeddingModelMismatchError",
+    "abstention_threshold_for",
     "assert_collection_compatible",
     "assert_compatible",
 ]
@@ -90,3 +91,30 @@ async def assert_collection_compatible(
 ) -> None:
     async with (engine or get_engine()).connect() as conn:
         await assert_compatible(conn, collection_id, provider, tenant_id=tenant_id)
+
+
+# Same shape as the lookup above: tenant_id is part of the predicate, not a
+# check after it.
+_SELECT_ABSTENTION = text(
+    "SELECT abstention_threshold FROM collections WHERE id = :id AND tenant_id = :tenant_id"
+)
+
+
+async def abstention_threshold_for(
+    collection_id: UUID,
+    *,
+    tenant_id: UUID,
+    engine: AsyncEngine | None = None,
+) -> float | None:
+    """This collection's tau, or None when the tenant cannot see the collection.
+
+    Read once per run and pinned into `SearchParams`, so a fork verifies at the
+    threshold the original run used (ADR 0022). None is close to unreachable —
+    `queries` holds a composite foreign key to `collections` — and the caller
+    falls back to `Settings` rather than failing a run on it.
+    """
+    async with (engine or get_engine()).connect() as conn:
+        row = (
+            await conn.execute(_SELECT_ABSTENTION, {"id": collection_id, "tenant_id": tenant_id})
+        ).first()
+    return None if row is None else float(row[0])

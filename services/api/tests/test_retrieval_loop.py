@@ -49,7 +49,7 @@ async def _rows(query_id: UUID) -> list[dict[str, Any]]:
         result = await conn.execute(
             text(
                 """
-                SELECT node_name, sequence, attempt, status, provider, model,
+                SELECT node_name, sequence, attempt, status, verdict, provider, model,
                        billing_unit, input_json, output_json
                   FROM query_traces
                  WHERE query_id = :query_id
@@ -129,6 +129,7 @@ async def test_an_empty_candidate_set_fails_grading_without_a_model_call(
             "rerank_candidate_k": 10,
             "rerank_score_floor": 0.44,
             "doc_relevance_threshold": 0.5,
+            "abstention_threshold": 0.58,
             "max_attempts": 3,
         },
         "query_embedding": None,
@@ -465,18 +466,19 @@ async def passed(
 
 
 @pytest.mark.integration
-async def test_a_passing_grade_reaches_abstain_with_insufficient_evidence(
+async def test_a_passing_grade_leaves_the_loop_and_never_returns_to_it(
     passed: tuple[QueryRun, "CollectionRef"],
 ) -> None:
-    """The stubs cite nothing, so the pass path refuses — and says which half failed.
+    """One pass of retrieval, then the grounding loop — which is a different loop.
 
-    Never `answered`: an answer with no citations cannot be persisted (ADR 0012),
-    and there is no path here that finalizes as one.
+    `abstain` is not on this route: the pass path ends at the gate, and the gate
+    is the only thing that can finalize as `answered` (ADR 0022). What the
+    retrieval loop owes is the count, and it is 1.
     """
     run, _ = passed
 
-    assert run.status == "refused"
-    assert run.refusal_reason == "insufficient_evidence"
+    assert run.status == "answered"
+    assert run.refusal_reason is None
 
     rows = await _rows(run.query_id)
     assert [row["node_name"] for row in rows] == [
@@ -487,19 +489,15 @@ async def test_a_passing_grade_reaches_abstain_with_insufficient_evidence(
         "grade_docs",
         "generate",
         "verify_grounding",
-        "abstain",
     ]
-    abstained = _named(rows, "abstain")[0]
-    assert abstained["output_json"]["refusal_reason"] == "insufficient_evidence"
-    # It refused because evidence survived grading and nothing grounded an answer.
-    assert abstained["input_json"]["candidates"] == 1
 
     async with get_engine().connect() as conn:
         final = (
             (
                 await conn.execute(
                     text(
-                        "SELECT status, refusal_reason, retrieval_attempts, citation_count"
+                        "SELECT status, refusal_reason, retrieval_attempts,"
+                        " grounding_attempts, citation_count"
                         " FROM queries WHERE id = :id"
                     ),
                     {"id": run.query_id},
@@ -508,10 +506,12 @@ async def test_a_passing_grade_reaches_abstain_with_insufficient_evidence(
             .mappings()
             .one()
         )
-    assert final["status"] == "refused"
-    assert final["refusal_reason"] == "insufficient_evidence"
+    assert final["status"] == "answered"
+    assert final["refusal_reason"] is None
+    # Separate columns, and each loop spent exactly one of its own attempts.
     assert final["retrieval_attempts"] == 1
-    assert final["citation_count"] == 0
+    assert final["grounding_attempts"] == 1
+    assert final["citation_count"] == 1
 
 
 @pytest.mark.integration
@@ -636,8 +636,8 @@ async def test_a_fork_grades_at_the_bar_the_original_run_graded_at(
     """`doc_relevance_threshold` is pinned, so raising it cannot fail a fork's evidence.
 
     The grader scores 0.6 in both runs. Pinned at 0.5 the fork keeps the chunk
-    and refuses on grounding; read live from a `Settings` saying 0.9 it would
-    keep nothing and refuse `no_relevant_evidence` instead.
+    and answers; read live from a `Settings` saying 0.9 it would keep nothing
+    and refuse `no_relevant_evidence` instead.
     """
     await seed(collection.collection_id, [(CHINCHILLA, _unit(0))])
     stubbed_models(grade='{"verdicts": [{"label": 1, "score": 0.6}]}')
@@ -647,7 +647,7 @@ async def test_a_fork_grades_at_the_bar_the_original_run_graded_at(
         collection_id=collection.collection_id,
         question=QUESTION,
     )
-    assert original.refusal_reason == "insufficient_evidence"
+    assert original.status == "answered"
     values = await _final_values(original.thread_id)
     assert values["retrieval_attempts"] == 1
     assert values["search_params"]["doc_relevance_threshold"] == 0.5
@@ -660,10 +660,6 @@ async def test_a_fork_grades_at_the_bar_the_original_run_graded_at(
     assert len(graded) == 1
     assert graded[0]["output_json"]["threshold"] == 0.5
     assert graded[0]["output_json"]["kept"] == 1
-    # It reached the pass path and refused there, as the original did.
-    assert [row["node_name"] for row in rows[-3:]] == [
-        "generate",
-        "verify_grounding",
-        "abstain",
-    ]
-    assert rows[-1]["output_json"]["refusal_reason"] == "insufficient_evidence"
+    # It reached the pass path and answered there, as the original did.
+    assert [row["node_name"] for row in rows[-2:]] == ["generate", "verify_grounding"]
+    assert rows[-1]["verdict"] == "pass"
