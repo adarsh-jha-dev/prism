@@ -106,7 +106,9 @@ async def test_a_stub_node_records_no_meter_and_no_price(collection: "Collection
         assert row["gpu_ms"] is None
         assert row["price_id"] is None and row["cost_usd"] is None
         assert row["cost_basis"] is None
-        assert row["verdict"] is None
+        # `verdict` is a judgement, not a meter: `grade_docs` renders one with
+        # no call to make, and every node that judges nothing writes NULL.
+        assert row["verdict"] == ("fail" if row["node_name"] == "grade_docs" else None)
 
 
 @pytest.mark.integration

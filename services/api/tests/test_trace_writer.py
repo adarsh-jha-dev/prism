@@ -341,15 +341,21 @@ async def test_the_query_total_is_the_sum_of_its_priced_trace_rows(
         question="what does a query cost?",
     )
 
+    # The patched `generate` binds no answer, so the gate rejects it and the
+    # grounding loop spends its whole budget — which is what makes this the
+    # sum of a correction loop rather than of one pass.
+    attempts = get_settings().max_attempts
     rows = await _rows(run.query_id)
     priced = [row["cost_usd"] for row in rows if row["price_id"] is not None]
     # plan_query and grade_docs meter on the local lane, and rerank on the
     # in-process one. All three price to zero; zero is a price (ADR 0013).
-    assert len(priced) == 5
+    # `verify_grounding` rejects without a call each time, so it meters nothing.
+    assert len(priced) == 4 + attempts
     total = await _total(run.query_id)
     assert total == sum(priced, Decimal(0))
-    # 2000 * 0.30 / 1e6 + 300 * 2.50 / 1e6, and the local embed adds exactly 0.
-    assert total == Decimal("0.00135000")
+    # 2000 * 0.30 / 1e6 + 300 * 2.50 / 1e6 per generation, and the local embed
+    # adds exactly 0.
+    assert total == attempts * Decimal("0.00135000")
 
 
 async def test_one_unpriced_call_makes_the_total_null_not_smaller(

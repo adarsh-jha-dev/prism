@@ -3,7 +3,12 @@
 queries.status is checked against the three terminal states, so there is no
 'running'. The row is inserted refused, with a reason, and a run that dies
 halfway leaves it that way — total_cost_usd included, which stays NULL: an
-incomplete total, not a zero one.
+incomplete total, not a zero one. That is also what a run dying between the gate
+and this write leaves behind, which is the direction it is allowed to fail.
+
+Finalization is one transaction: the outcome, the answer, the citation count and
+the citation rows, which are held in state until here so a rejected generation
+leaves none behind (ADR 0021).
 """
 
 import time
@@ -21,6 +26,7 @@ from prism.db import get_engine
 from prism.graph.checkpointer import get_checkpointer
 from prism.graph.graph import compile_graph
 from prism.graph.state import (
+    CitationRef,
     GraphState,
     RefusalReason,
     TerminalStatus,
@@ -28,7 +34,7 @@ from prism.graph.state import (
 )
 from prism.graph.trace import link_checkpoints
 
-__all__ = ["QueryRun", "mint_query", "run_query"]
+__all__ = ["QueryRun", "finalize", "mint_query", "rank_citations", "run_query"]
 
 log = structlog.get_logger(__name__)
 
@@ -49,6 +55,8 @@ _FINALIZE_QUERY = text(
     UPDATE queries
        SET status = :status,
            refusal_reason = :refusal_reason,
+           final_answer = :final_answer,
+           citation_count = :citation_count,
            retrieval_attempts = :retrieval_attempts,
            grounding_attempts = :grounding_attempts,
            latency_ms = :latency_ms,
@@ -65,6 +73,27 @@ _FINALIZE_QUERY = text(
            )
      WHERE id = :id AND tenant_id = :tenant_id
     """
+)
+
+
+_INSERT_CITATION = text(
+    """
+    INSERT INTO query_citations (
+        id, query_id, tenant_id, chunk_ref, chunk_id, document_id,
+        page_number, chunk_index, rank, rerank_score, cited_content
+    ) VALUES (
+        :id, :query_id, :tenant_id, :chunk_ref, :chunk_id, :document_id,
+        :page_number, :chunk_index, :rank, :rerank_score, :cited_content
+    )
+    """
+)
+
+# chunk_ref is what was cited and is never null; chunk_id says whether that
+# chunk still exists (migration 0009). Resolved inside the finalizing
+# transaction, because a chunk deleted between `generate` and here would
+# otherwise fail the foreign key and lose a sound answer.
+_LIVE_CHUNKS = text(
+    "SELECT id FROM chunks WHERE tenant_id = :tenant_id AND id = ANY(CAST(:chunk_ids AS uuid[]))"
 )
 
 
@@ -122,6 +151,8 @@ async def run_query(*, tenant_id: UUID, collection_id: UUID, question: str) -> Q
         "search_params": search_params_from(get_settings()),
         "query_embedding": None,
         "candidates": [],
+        # The gate writes this; `generate` reads it on a retry (ADR 0022).
+        "unsupported_spans": [],
         # `generate` writes these; nothing persists them until `verify_grounding`
         # passes an answer (ADR 0021). Seeded rather than absent, as above.
         "answer": None,
@@ -140,31 +171,128 @@ async def run_query(*, tenant_id: UUID, collection_id: UUID, question: str) -> Q
         await link_checkpoints(query_id=query_id, graph=graph, config=config)
     latency_ms = int((time.perf_counter() - clock) * 1000)
 
-    async with get_engine().begin() as conn:
-        await conn.execute(
-            _FINALIZE_QUERY,
-            {
-                "id": query_id,
-                "tenant_id": tenant_id,
-                "status": final["status"],
-                "refusal_reason": final["refusal_reason"],
-                "retrieval_attempts": final["retrieval_attempts"],
-                "grounding_attempts": final["grounding_attempts"],
-                "latency_ms": latency_ms,
-            },
-        )
+    status, refusal_reason = await finalize(
+        query_id=query_id, tenant_id=tenant_id, final=final, latency_ms=latency_ms
+    )
 
     log.info(
         "query.finished",
         query_id=str(query_id),
-        status=final["status"],
-        refusal_reason=final["refusal_reason"],
+        status=status,
+        refusal_reason=refusal_reason,
         latency_ms=latency_ms,
     )
     return QueryRun(
         query_id=query_id,
         thread_id=thread_id,
-        status=final["status"],
-        refusal_reason=final["refusal_reason"],
+        status=status,
+        refusal_reason=refusal_reason,
         latency_ms=latency_ms,
     )
+
+
+def rank_citations(citations: list[CitationRef]) -> list[CitationRef]:
+    """Rank by rerank score, densely from 1, at write time.
+
+    `query_citations.rank` is UNIQUE per query and checked >= 1, and it is the
+    order the dashboard lists sources in — so it comes from a score we computed,
+    never from the order the model happened to return its citations in.
+
+    `rerank`'s fallback leaves a candidate unscored (ADR 0011). Unscored sorts
+    last and keeps its relative order, rather than sorting as zero and ranking
+    below a chunk that genuinely scored 0.05.
+    """
+    ordered = sorted(
+        citations,
+        key=lambda citation: (
+            citation["rerank_score"] is None,
+            -(citation["rerank_score"] or 0.0),
+        ),
+    )
+    return [{**citation, "rank": rank} for rank, citation in enumerate(ordered, start=1)]
+
+
+async def finalize(
+    *,
+    query_id: UUID,
+    tenant_id: UUID,
+    final: GraphState,
+    latency_ms: int,
+) -> tuple[TerminalStatus, RefusalReason | None]:
+    """Write the outcome, the answer and the citations in one transaction.
+
+    `queries_citation_count_check` forbids an answered row carrying no
+    citations, and the way to satisfy it is never to invent one: an answer with
+    no evidence refuses `insufficient_evidence`, because evidence survived
+    retrieval and it is generation that did not complete (ADR 0022).
+    """
+    status: TerminalStatus = final["status"]
+    refusal_reason: RefusalReason | None = final["refusal_reason"]
+    answer = final["answer"] if status == "answered" else None
+    citations = rank_citations(final["citations"]) if status == "answered" else []
+
+    if status == "answered" and not (answer and citations):
+        # Unreachable through the graph: the gate fails an answer with no
+        # evidence before it calls anything. A guard, because the alternatives
+        # here are a constraint violation or a fabricated citation.
+        log.error(
+            "finalize.answered_without_evidence",
+            query_id=str(query_id),
+            citations=len(citations),
+        )
+        status, refusal_reason, answer, citations = (
+            "refused",
+            "insufficient_evidence",
+            None,
+            [],
+        )
+
+    async with get_engine().begin() as conn:
+        live: set[UUID] = set()
+        if citations:
+            rows = await conn.execute(
+                _LIVE_CHUNKS,
+                {
+                    "tenant_id": tenant_id,
+                    "chunk_ids": [str(citation["chunk_id"]) for citation in citations],
+                },
+            )
+            live = {row[0] for row in rows}
+
+        await conn.execute(
+            _FINALIZE_QUERY,
+            {
+                "id": query_id,
+                "tenant_id": tenant_id,
+                "status": status,
+                "refusal_reason": refusal_reason,
+                "final_answer": answer,
+                "citation_count": len(citations),
+                "retrieval_attempts": final["retrieval_attempts"],
+                "grounding_attempts": final["grounding_attempts"],
+                "latency_ms": latency_ms,
+            },
+        )
+        if citations:
+            await conn.execute(
+                _INSERT_CITATION,
+                [
+                    {
+                        "id": uuid7(),
+                        "query_id": query_id,
+                        "tenant_id": tenant_id,
+                        "chunk_ref": citation["chunk_id"],
+                        "chunk_id": (
+                            citation["chunk_id"] if citation["chunk_id"] in live else None
+                        ),
+                        "document_id": citation["document_id"],
+                        "page_number": citation["page_number"],
+                        "chunk_index": citation["chunk_index"],
+                        "rank": citation["rank"],
+                        "rerank_score": citation["rerank_score"],
+                        "cited_content": citation["content"],
+                    }
+                    for citation in citations
+                ],
+            )
+    return status, refusal_reason

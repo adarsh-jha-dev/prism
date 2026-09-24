@@ -47,11 +47,21 @@ class SearchParams(TypedDict):
     rerank_score_floor: float
     # Read by `grade_docs` and by `after_grade_docs`. Not widths, same argument.
     doc_relevance_threshold: float
+    # tau, from the collection (ADR 0022). Read by `verify_grounding` alone, and
+    # compared only against a groundedness score — never a similarity.
+    abstention_threshold: float
     max_attempts: int
 
 
-def search_params_from(settings: Settings) -> SearchParams:
-    """The configured defaults, resolved once per run by `plan_query`."""
+def search_params_from(
+    settings: Settings, *, abstention_threshold: float | None = None
+) -> SearchParams:
+    """The configured defaults, resolved once per run by `plan_query`.
+
+    tau is the collection's, when `plan_query` could read it. `None` falls back
+    to `Settings`, which covers one case only: the collection is not visible to
+    this tenant (ADR 0022).
+    """
     return SearchParams(
         k=settings.retrieval_top_k,
         candidate_k=settings.retrieval_candidate_k,
@@ -59,6 +69,9 @@ def search_params_from(settings: Settings) -> SearchParams:
         rerank_candidate_k=settings.rerank_candidate_k,
         rerank_score_floor=settings.rerank_score_floor,
         doc_relevance_threshold=settings.doc_relevance_threshold,
+        abstention_threshold=(
+            settings.abstention_threshold if abstention_threshold is None else abstention_threshold
+        ),
         max_attempts=settings.max_attempts,
     )
 
@@ -139,6 +152,12 @@ class GraphState(TypedDict):
     # leaving the previous attempt's answer standing.
     answer: str | None
     citations: list[CitationRef]
+
+    # The claims `verify_grounding` found unsupported on the last attempt, fed
+    # back into `generate`'s prompt so a regeneration is constrained by its own
+    # failure rather than being a re-roll (ADR 0022). Written on every execution
+    # of the gate and empty on a pass, so it is never stale.
+    unsupported_spans: list[str]
 
     status: TerminalStatus
     refusal_reason: RefusalReason | None

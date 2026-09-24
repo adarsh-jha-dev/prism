@@ -1,9 +1,8 @@
 """StateGraph assembly.
 
-One conditional edge so far: `grade_docs` either passes to `generate` or sends
-the run back around the retrieval loop. `generate` produces a real answer bound
-to real citations, and the pass path still ends at `abstain`, because
-`verify_grounding` is a stub and an answer nothing has verified reaches nobody.
+Two conditional edges, one per correction loop. `grade_docs` either passes to
+`generate` or sends the run back around retrieval; `verify_grounding` either
+finalizes, regenerates, or refuses. The second is the only path to `answered`.
 
 `rerank` sits between `retrieve` and `grade_docs` (ADR 0020), inside the loop.
 It needs no conditional edge of its own: a set its floor empties reaches
@@ -24,7 +23,13 @@ from langgraph.graph.state import CompiledStateGraph
 from prism.graph import nodes
 from prism.graph.state import GraphState
 
-__all__ = ["NODES", "after_grade_docs", "build_graph", "compile_graph"]
+__all__ = [
+    "NODES",
+    "after_grade_docs",
+    "after_verify_grounding",
+    "build_graph",
+    "compile_graph",
+]
 
 # Canonical names: they are trace rows and the dashboard's waterfall.
 NODES = (
@@ -61,6 +66,28 @@ def after_grade_docs(state: GraphState) -> str:
     return "abstain"
 
 
+def after_verify_grounding(state: GraphState) -> str:
+    """Finalize, regenerate, or refuse.
+
+    `verify_grounding` writes `status` and this reads it, as `after_grade_docs`
+    reads the candidates the grader kept: the node renders the verdict, the edge
+    only routes it.
+
+    `grounding_attempts` is this loop's own counter. A run that spent its whole
+    retrieval budget still arrives here with every generation unspent, and
+    neither counter is readable from the other (ADR 0022).
+
+    The pass goes to END rather than to a `finalize` node. `CLAUDE.md` has three
+    terminals and no such node, and the transactional write needs the latency
+    measured around the run — so `run.py` owns it, as it already did for refusals.
+    """
+    if state["status"] == "answered":
+        return END
+    if state["grounding_attempts"] < state["search_params"]["max_attempts"]:
+        return "generate"
+    return "abstain"
+
+
 def build_graph() -> StateGraph[GraphState, None, GraphState, GraphState]:
     builder: StateGraph[GraphState, None, GraphState, GraphState] = StateGraph(GraphState)
     for name in NODES:
@@ -79,11 +106,12 @@ def build_graph() -> StateGraph[GraphState, None, GraphState, GraphState]:
     )
     builder.add_edge("rewrite_query", "plan_query")
 
-    # The pass path reaches `abstain` rather than END: `verify_grounding` is the
-    # gate, it is still a stub, and an unverified answer must not finalize as one
-    # (ADR 0021). `generate`'s answer and citations sit in state and go nowhere.
     builder.add_edge("generate", "verify_grounding")
-    builder.add_edge("verify_grounding", "abstain")
+    builder.add_conditional_edges(
+        "verify_grounding",
+        after_verify_grounding,
+        ["generate", "abstain", END],
+    )
 
     builder.add_edge("abstain", END)
     return builder

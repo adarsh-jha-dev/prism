@@ -4,9 +4,9 @@ The generator is scripted, because the subject is the binding — which labels
 survive validation, what order they come back in, what the node records and what
 the graph does when nothing grounds — not what a 32b model writes.
 
-Nothing here finalizes as `answered`. `verify_grounding` is a stub, so every run
-in this file still refuses, and the assertions about `query_citations` being
-empty are the regression guard for that (ADR 0021).
+What the gate does with the binding is tests/test_grounding_loop.py. Here the
+verifier is scripted to pass unless a test is about a rejection, so what these
+assertions are about is still the binding.
 """
 
 from typing import TYPE_CHECKING, Any
@@ -43,6 +43,9 @@ HARBOUR = "Unrelated material about harbour logistics and berth scheduling."
 
 BOTH_PASS = '{"verdicts": [{"label": 1, "score": 0.9}, {"label": 2, "score": 0.9}]}'
 FIRST_PASSES = '{"verdicts": [{"label": 1, "score": 0.91}]}'
+# The gate rejecting the answer's only claim, for the tests whose subject is
+# what a rejected binding leaves behind.
+UNGROUNDED = '{"verdicts": [{"label": 1, "score": 0.05}]}'
 
 
 def _unit(index: int) -> list[float]:
@@ -125,6 +128,7 @@ def _state(**overrides: Any) -> GraphState:
         "candidates": [],
         "answer": None,
         "citations": [],
+        "unsupported_spans": [],
         "status": "refused",
         "refusal_reason": "no_relevant_evidence",
     }
@@ -303,14 +307,14 @@ async def answerable(collection: "CollectionRef") -> "CollectionRef":
 
 
 @pytest.mark.integration
-async def test_a_generated_answer_still_ends_the_run_refused(
+async def test_a_verified_answer_persists_the_binding_generate_made(
     answerable: "CollectionRef", stubbed_models: "StubbedModels"
 ) -> None:
-    """An answer exists, is bound to a real chunk, and reaches nobody.
+    """The binding survives the gate intact: same chunk, same text, same score.
 
-    `verify_grounding` is a stub, so nothing has judged this answer and no path
-    finalizes as `answered`. The refusal is `insufficient_evidence`: candidates
-    survived retrieval, and generation is what did not complete.
+    `cited_content` is the passage as the model was shown it (ADR 0021), which
+    is the assertion that the snapshot in state is what reached the row rather
+    than a re-read at write time.
     """
     stubbed_models(grade=FIRST_PASSES)
 
@@ -320,14 +324,12 @@ async def test_a_generated_answer_still_ends_the_run_refused(
         question=QUESTION,
     )
 
-    assert run.status == "refused"
-    assert run.refusal_reason == "insufficient_evidence"
+    assert run.status == "answered"
+    assert run.refusal_reason is None
 
-    # The answer and its binding exist — in state, where nothing persists them.
     values = await _final_values(run.thread_id)
     assert values["answer"] == "Twenty tokens per parameter [1]."
     assert [citation["label"] for citation in values["citations"]] == [1]
-    assert values["citations"][0]["content"] == CHINCHILLA
 
     async with get_engine().connect() as conn:
         final = (
@@ -343,11 +345,17 @@ async def test_a_generated_answer_still_ends_the_run_refused(
             .mappings()
             .one()
         )
-    assert final["status"] == "refused"
-    assert final["final_answer"] is None
-    assert final["citation_count"] == 0
-    # The gate increments this, and the gate is `verify_grounding`.
-    assert final["grounding_attempts"] == 0
+    assert final["status"] == "answered"
+    assert final["refusal_reason"] is None
+    assert final["final_answer"] == "Twenty tokens per parameter [1]."
+    assert final["citation_count"] == 1
+    # The gate increments this, and one pass of the loop is one attempt.
+    assert final["grounding_attempts"] == 1
+
+    rows = await _citation_rows(run.query_id)
+    assert [row["cited_content"] for row in rows] == [CHINCHILLA]
+    assert [row["rank"] for row in rows] == [1]
+    assert rows[0]["chunk_ref"] == rows[0]["chunk_id"]
 
 
 @pytest.mark.integration
@@ -359,7 +367,7 @@ async def test_citations_from_a_run_that_ends_refused_are_not_persisted(
     ADR 0012 requires a refused query to carry zero citation rows, and this is
     the arrangement that makes that true by construction rather than by cleanup.
     """
-    stubbed_models(grade=FIRST_PASSES)
+    stubbed_models(grade=FIRST_PASSES, verify=UNGROUNDED)
 
     run = await run_query(
         tenant_id=answerable.tenant_id,
@@ -368,6 +376,7 @@ async def test_citations_from_a_run_that_ends_refused_are_not_persisted(
     )
 
     assert run.status == "refused"
+    assert run.refusal_reason == "insufficient_evidence"
     values = await _final_values(run.thread_id)
     assert values["citations"], "the run did bind a citation, so this is not vacuous"
     assert await _citation_rows(run.query_id) == []
@@ -381,10 +390,12 @@ async def test_a_fabricated_citation_never_reaches_a_citation_row(
 
     A fabricated chunk id is one of the injection categories this project tests
     for, so the assertion is that nothing downstream can see it: not in state,
-    not in a row, and named on the trace as dropped.
+    not in a row, and named on the trace as dropped. The run answers, which is
+    what makes the citation table the assertion rather than the refusal.
     """
     stubbed_models(
         grade=FIRST_PASSES,
+        verify='{"verdicts": [{"label": 1, "score": 0.95}]}',
         answer=(
             '{"answer": "Twenty tokens per parameter [1], as reported [9].",'
             ' "citations": [{"label": 1}, {"label": 9}]}'
@@ -403,7 +414,10 @@ async def test_a_fabricated_citation_never_reaches_a_citation_row(
 
     values = await _final_values(run.thread_id)
     assert [citation["label"] for citation in values["citations"]] == [1]
-    assert await _citation_rows(run.query_id) == []
+
+    assert run.status == "answered"
+    rows = await _citation_rows(run.query_id)
+    assert [row["cited_content"] for row in rows] == [CHINCHILLA]
     # The prose is left as the model wrote it; the binding is what was refused.
     assert "[9]" in (values["answer"] or "")
 
@@ -466,7 +480,9 @@ async def test_the_answer_is_generated_from_the_question_not_the_rewritten_searc
     prompt = chat.calls_for("GroundedAnswer")[0][-1].content
     assert QUESTION in prompt
     assert "harbour berth scheduling" not in prompt
-    assert run.refusal_reason == "insufficient_evidence"
+    # The gate judges against the same text, for the same reason.
+    assert QUESTION in chat.calls_for("GroundingVerdicts")[0][-1].content
+    assert run.status == "answered"
 
 
 @pytest.mark.integration

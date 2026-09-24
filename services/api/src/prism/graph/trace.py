@@ -35,10 +35,16 @@ __all__ = [
     "Node",
     "TraceContext",
     "TracedNode",
+    "Verdict",
     "cap_payload",
     "link_checkpoints",
     "traced",
 ]
+
+# Nullable on the row, and meaningful only on a node that judges: `grade_docs`
+# judges relevance, `verify_grounding` judges groundedness, and every other node
+# has an outcome and no verdict (migration 0009, ADR 0022).
+Verdict = Literal["pass", "fail"]
 
 log = structlog.get_logger(__name__)
 
@@ -50,16 +56,21 @@ class TraceContext:
     `traced` and discarded once the row is written.
     """
 
-    __slots__ = ("_input", "_output", "_usage")
+    __slots__ = ("_input", "_output", "_usage", "_verdict")
 
     def __init__(self) -> None:
         self._usage: Usage | None = None
+        self._verdict: Verdict | None = None
         self._input: object = None
         self._output: object = None
 
     @property
     def usage(self) -> Usage | None:
         return self._usage
+
+    @property
+    def verdict(self) -> Verdict | None:
+        return self._verdict
 
     @property
     def input(self) -> object:
@@ -77,6 +88,10 @@ class TraceContext:
                 "one node execution is one provider call"
             )
         self._usage = usage
+
+    def record_verdict(self, verdict: Verdict) -> None:
+        """A judging node's pass or fail. Every other node leaves it NULL."""
+        self._verdict = verdict
 
     def record_input(self, payload: object) -> None:
         """References, not copies (ADR 0012): chunk ids with scores, not chunk text."""
@@ -99,13 +114,13 @@ _INSERT = text(
     """
     INSERT INTO query_traces (
         id, query_id, tenant_id, node_name, sequence, attempt,
-        status, started_at, duration_ms, error,
+        status, verdict, started_at, duration_ms, error,
         provider, model, billing_unit, input_tokens, output_tokens, gpu_ms,
         price_id, cost_usd, cost_basis,
         input_json, output_json, input_truncated, output_truncated
     ) VALUES (
         :id, :query_id, :tenant_id, :node_name, :sequence, :attempt,
-        :status, :started_at, :duration_ms, :error,
+        :status, :verdict, :started_at, :duration_ms, :error,
         :provider, :model, :billing_unit, :input_tokens, :output_tokens, :gpu_ms,
         :price_id, :cost_usd, :cost_basis,
         CAST(:input_json AS jsonb), CAST(:output_json AS jsonb),
@@ -224,6 +239,7 @@ async def write_trace(
                 "sequence": sequence,
                 "attempt": attempt,
                 "status": status,
+                "verdict": trace.verdict,
                 "started_at": started_at,
                 "duration_ms": duration_ms,
                 "error": error,
