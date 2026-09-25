@@ -49,6 +49,7 @@ class AnswerBlock:
     """
 
     def __init__(self, results: Sequence[AnswerResult], settings: Settings) -> None:
+        self.settings = settings
         self.results = tuple(results)
         self.scored = tuple(r for r in self.results if not r.degraded)
         self.excluded = tuple(r for r in self.results if r.degraded)
@@ -277,8 +278,14 @@ def _answer_lines(block: AnswerBlock) -> list[str]:
     """The graph's own numbers. Correct refusal first — it is the headline."""
     refusal, grounding = block.refusal, block.groundedness
     citations, budget = block.citations, block.budget
+    settings = block.settings
     lines = [
         f"Answer — {len(block.scored)} of {len(block.results)} runs scored",
+        f"  Models    plan {settings.planner_model}   grade/verify {settings.grader_model}   "
+        f"generate {settings.generator_model}",
+        f"  Policy    tau {settings.abstention_threshold:.2f}   "
+        f"attempts {settings.max_attempts} per loop   "
+        f"doc relevance {settings.doc_relevance_threshold:.2f}",
     ]
     if block.excluded:
         lines.append(
@@ -440,8 +447,23 @@ def render_json(report: Report) -> str:
 def _answer_payload(block: AnswerBlock) -> dict[str, Any]:
     refusal, grounding = block.refusal, block.groundedness
     citations, budget, attempts = block.citations, block.budget, block.attempts
+    settings = block.settings
     return {
         "runs": len(block.results),
+        # A refusal rate is comparable only against the models that graded and
+        # generated it, and the constants they decided under.
+        "models": {
+            "planner": settings.planner_model,
+            "grader": settings.grader_model,
+            "generator": settings.generator_model,
+            "reranker": settings.reranker_model,
+        },
+        "policy": {
+            "abstention_threshold": settings.abstention_threshold,
+            "max_attempts": settings.max_attempts,
+            "doc_relevance_threshold": settings.doc_relevance_threshold,
+            "rerank_score_floor": settings.rerank_score_floor,
+        },
         "scored": len(block.scored),
         "excluded_degraded": [r.question_id for r in block.excluded],
         "refusal": {

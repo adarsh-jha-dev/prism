@@ -217,7 +217,8 @@ class AnswerResult:
     refusal_reason: RefusalReason | None
     retrieval_attempts: int
     grounding_attempts: int
-    latency_ms: int
+    latency_ms: int | None
+    """NULL on a run that never finalized — unknown, not zero."""
     cost_usd: Decimal | None
     input_tokens: int
     output_tokens: int
@@ -386,7 +387,7 @@ def summarize_budget(
     results: Sequence[AnswerResult], *, cost_budget_usd: float, latency_budget_s: float
 ) -> BudgetSummary:
     costs = [r.cost_usd for r in results if r.cost_usd is not None]
-    latencies = [float(r.latency_ms) for r in results]
+    latencies = [float(r.latency_ms) for r in results if r.latency_ms is not None]
     budget = Decimal(str(cost_budget_usd))
     latency_budget_ms = int(latency_budget_s * 1000)
     return BudgetSummary(

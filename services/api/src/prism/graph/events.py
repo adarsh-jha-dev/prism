@@ -43,10 +43,18 @@ class EventChannel:
     def __init__(self) -> None:
         self._queue: asyncio.Queue[NodeEvent | None] = asyncio.Queue()
         self._closed = False
+        self._query_id: UUID | None = None
+
+    @property
+    def query_id(self) -> UUID | None:
+        """The run this channel is following, once any node has reported."""
+        return self._query_id
 
     def publish(self, event: NodeEvent) -> None:
-        if not self._closed:
-            self._queue.put_nowait(event)
+        if self._closed:
+            return
+        self._query_id = event.query_id
+        self._queue.put_nowait(event)
 
     def close(self) -> None:
         if not self._closed:

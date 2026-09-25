@@ -4,10 +4,10 @@ Calls `run_query`, so every number the report carries comes from `queries` and
 `query_traces` — the rows the dashboard renders — rather than from anything the
 harness observed on the way past.
 
-A run that raises fails the eval run, as a RerankError already does in
-`runner.py`: a query that did not finish is not a data point. A run that
-*finished* while degrading is a different case — it is marked here and excluded
-by the caller, never dropped (ADR 0011).
+A run that fails costs one observation, not the run: it left a `queries` row and
+an error trace row, which is the second shape of degradation `exclusions.py`
+already recognises, so it comes back marked and the caller excludes it. Only a
+failure before any node reported has nothing to record, and that one raises.
 
 Questions are independent and run concurrently; results come back in golden-set
 order regardless.
@@ -27,7 +27,8 @@ from prism.db import get_engine
 from prism.eval.exclusions import degraded_query_ids
 from prism.eval.golden import GoldenQuestion, GoldenSet
 from prism.eval.metrics import AnswerResult
-from prism.graph.run import QueryRun, run_query
+from prism.graph.events import EventChannel
+from prism.graph.run import run_query
 
 __all__ = ["collect_results", "run_answer_set"]
 
@@ -104,29 +105,44 @@ async def run_answer_set(
     settings = settings or get_settings()
     limit = asyncio.Semaphore(concurrency or settings.concurrency_ollama_local)
 
-    async def one(question: GoldenQuestion) -> QueryRun:
+    async def one(question: GoldenQuestion) -> UUID:
+        # The channel is here only for the id: a run that raises never returns
+        # one, and without it there is no row to go and read.
+        channel = EventChannel()
         async with limit:
             log.info("eval.answer.start", question_id=question.id)
-            return await run_query(
-                tenant_id=collection.tenant_id,
-                collection_id=collection.collection_id,
-                question=question.question,
-            )
+            try:
+                run = await run_query(
+                    tenant_id=collection.tenant_id,
+                    collection_id=collection.collection_id,
+                    question=question.question,
+                    events=channel,
+                )
+            except Exception:
+                if channel.query_id is None:
+                    raise
+                log.warning(
+                    "eval.answer.failed",
+                    question_id=question.id,
+                    query_id=str(channel.query_id),
+                    exc_info=True,
+                )
+                return channel.query_id
+            return run.query_id
 
-    runs = await asyncio.gather(*(one(question) for question in golden.questions))
-    return await collect_results(golden.questions, runs, engine=engine)
+    query_ids = await asyncio.gather(*(one(question) for question in golden.questions))
+    return await collect_results(golden.questions, query_ids, engine=engine)
 
 
 async def collect_results(
     questions: Sequence[GoldenQuestion],
-    runs: Sequence[QueryRun],
+    query_ids: Sequence[UUID],
     *,
     engine: AsyncEngine | None = None,
 ) -> tuple[AnswerResult, ...]:
     """Pair each question with the rows its run left behind."""
-    if len(questions) != len(runs):
+    if len(questions) != len(query_ids):
         raise ValueError("one run per question")
-    query_ids = [run.query_id for run in runs]
     ids = [str(query_id) for query_id in query_ids]
 
     async with (engine or get_engine()).connect() as conn:
@@ -147,17 +163,17 @@ async def collect_results(
     degraded = await degraded_query_ids(query_ids, engine=engine)
 
     results: list[AnswerResult] = []
-    for question, run in zip(questions, runs, strict=True):
-        row = rows[run.query_id]
-        meter = meters.get(run.query_id)
-        shown = passages.get(run.query_id, set())
-        refs = cited.get(run.query_id, [])
+    for question, query_id in zip(questions, query_ids, strict=True):
+        row = rows[query_id]
+        meter = meters.get(query_id)
+        shown = passages.get(query_id, set())
+        refs = cited.get(query_id, [])
         results.append(
             AnswerResult(
                 question_id=question.id,
                 question=question.question,
                 unanswerable=question.unanswerable,
-                query_id=run.query_id,
+                query_id=query_id,
                 status=row.status,
                 refusal_reason=row.refusal_reason,
                 retrieval_attempts=row.retrieval_attempts,
@@ -167,11 +183,11 @@ async def collect_results(
                 input_tokens=meter.input_tokens if meter else 0,
                 output_tokens=meter.output_tokens if meter else 0,
                 nodes=meter.nodes if meter else 0,
-                groundedness=grounded.get(run.query_id),
+                groundedness=grounded.get(query_id),
                 citations=len(refs),
                 unresolved_citations=sum(1 for ref in refs if ref not in shown),
                 fabricated_citations=meter.fabricated if meter else 0,
-                degraded=run.query_id in degraded,
+                degraded=query_id in degraded,
             )
         )
     return tuple(results)

@@ -69,7 +69,7 @@ async def test_an_answered_run_carries_its_citations_groundedness_and_meters(
         collection_id=answerable.collection_id,
         question=QUESTION,
     )
-    (result,) = await collect_results([question()], [run])
+    (result,) = await collect_results([question()], [run.query_id])
 
     assert result.status == "answered"
     assert result.refusal_reason is None
@@ -98,7 +98,7 @@ async def test_a_retrieval_refusal_has_no_groundedness_and_no_citations(
         collection_id=unanswerable.collection_id,
         question=QUESTION,
     )
-    (result,) = await collect_results([question(unanswerable=True)], [run])
+    (result,) = await collect_results([question(unanswerable=True)], [run.query_id])
 
     assert (result.status, result.refusal_reason) == ("refused", "no_relevant_evidence")
     assert result.groundedness is None
@@ -118,7 +118,7 @@ async def test_a_grounding_refusal_keeps_the_last_gate_score_and_persists_nothin
         collection_id=answerable.collection_id,
         question=QUESTION,
     )
-    (result,) = await collect_results([question()], [run])
+    (result,) = await collect_results([question()], [run.query_id])
 
     assert (result.status, result.refusal_reason) == ("refused", "insufficient_evidence")
     assert result.groundedness == pytest.approx(0.05)
@@ -138,7 +138,7 @@ async def test_a_rerank_fallback_comes_back_marked_degraded(
         collection_id=answerable.collection_id,
         question=QUESTION,
     )
-    (result,) = await collect_results([question()], [run])
+    (result,) = await collect_results([question()], [run.query_id])
 
     assert result.degraded
 
@@ -155,4 +155,4 @@ async def test_collecting_needs_one_run_per_question(
     )
 
     with pytest.raises(ValueError, match="one run per question"):
-        await collect_results([question(), question()], [run])
+        await collect_results([question(), question()], [run.query_id])
