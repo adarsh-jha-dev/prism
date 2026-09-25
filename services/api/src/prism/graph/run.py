@@ -24,6 +24,7 @@ from prism.config import get_settings
 from prism.core.ids import uuid7
 from prism.db import get_engine
 from prism.graph.checkpointer import get_checkpointer
+from prism.graph.events import EventChannel, publishing
 from prism.graph.graph import compile_graph
 from prism.graph.state import (
     CitationRef,
@@ -34,7 +35,15 @@ from prism.graph.state import (
 )
 from prism.graph.trace import link_checkpoints
 
-__all__ = ["QueryRun", "finalize", "mint_query", "rank_citations", "run_query"]
+__all__ = [
+    "Citation",
+    "Outcome",
+    "QueryRun",
+    "finalize",
+    "mint_query",
+    "rank_citations",
+    "run_query",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -92,9 +101,37 @@ _INSERT_CITATION = text(
 # chunk still exists (migration 0009). Resolved inside the finalizing
 # transaction, because a chunk deleted between `generate` and here would
 # otherwise fail the foreign key and lose a sound answer.
-_LIVE_CHUNKS = text(
-    "SELECT id FROM chunks WHERE tenant_id = :tenant_id AND id = ANY(CAST(:chunk_ids AS uuid[]))"
+# filename comes back with it rather than entering state (ADR 0017).
+_CITED_CHUNKS = text(
+    """
+    SELECT c.id, d.filename
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+     WHERE c.tenant_id = :tenant_id
+       AND c.id = ANY(CAST(:chunk_ids AS uuid[]))
+    """
 )
+
+
+@dataclass(frozen=True)
+class Citation:
+    """One citation as finalization ranked it."""
+
+    rank: int
+    document_id: UUID
+    filename: str | None
+    page_number: int | None
+    content: str
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """What finalization wrote."""
+
+    status: TerminalStatus
+    refusal_reason: RefusalReason | None
+    answer: str | None
+    citations: tuple[Citation, ...]
 
 
 @dataclass(frozen=True)
@@ -104,6 +141,8 @@ class QueryRun:
     status: TerminalStatus
     refusal_reason: RefusalReason | None
     latency_ms: int
+    answer: str | None
+    citations: tuple[Citation, ...]
 
 
 async def mint_query(*, tenant_id: UUID, collection_id: UUID, question: str) -> tuple[UUID, str]:
@@ -128,7 +167,14 @@ async def mint_query(*, tenant_id: UUID, collection_id: UUID, question: str) -> 
     return query_id, thread_id
 
 
-async def run_query(*, tenant_id: UUID, collection_id: UUID, question: str) -> QueryRun:
+async def run_query(
+    *,
+    tenant_id: UUID,
+    collection_id: UUID,
+    question: str,
+    events: EventChannel | None = None,
+) -> QueryRun:
+    """Run one query to a terminal state. `events` subscribes to its node rows."""
     query_id, thread_id = await mint_query(
         tenant_id=tenant_id, collection_id=collection_id, question=question
     )
@@ -164,30 +210,33 @@ async def run_query(*, tenant_id: UUID, collection_id: UUID, question: str) -> Q
     clock = time.perf_counter()
     graph = compile_graph(await get_checkpointer())
     config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-    try:
-        # ainvoke returns the state dict untyped.
-        final = cast(GraphState, await graph.ainvoke(state, config=config))
-    finally:
-        await link_checkpoints(query_id=query_id, graph=graph, config=config)
+    with publishing(events):
+        try:
+            # ainvoke returns the state dict untyped.
+            final = cast(GraphState, await graph.ainvoke(state, config=config))
+        finally:
+            await link_checkpoints(query_id=query_id, graph=graph, config=config)
     latency_ms = int((time.perf_counter() - clock) * 1000)
 
-    status, refusal_reason = await finalize(
+    outcome = await finalize(
         query_id=query_id, tenant_id=tenant_id, final=final, latency_ms=latency_ms
     )
 
     log.info(
         "query.finished",
         query_id=str(query_id),
-        status=status,
-        refusal_reason=refusal_reason,
+        status=outcome.status,
+        refusal_reason=outcome.refusal_reason,
         latency_ms=latency_ms,
     )
     return QueryRun(
         query_id=query_id,
         thread_id=thread_id,
-        status=status,
-        refusal_reason=refusal_reason,
+        status=outcome.status,
+        refusal_reason=outcome.refusal_reason,
         latency_ms=latency_ms,
+        answer=outcome.answer,
+        citations=outcome.citations,
     )
 
 
@@ -218,7 +267,7 @@ async def finalize(
     tenant_id: UUID,
     final: GraphState,
     latency_ms: int,
-) -> tuple[TerminalStatus, RefusalReason | None]:
+) -> Outcome:
     """Write the outcome, the answer and the citations in one transaction.
 
     `queries_citation_count_check` forbids an answered row carrying no
@@ -247,17 +296,17 @@ async def finalize(
             [],
         )
 
+    live: dict[UUID, str] = {}
     async with get_engine().begin() as conn:
-        live: set[UUID] = set()
         if citations:
             rows = await conn.execute(
-                _LIVE_CHUNKS,
+                _CITED_CHUNKS,
                 {
                     "tenant_id": tenant_id,
                     "chunk_ids": [str(citation["chunk_id"]) for citation in citations],
                 },
             )
-            live = {row[0] for row in rows}
+            live = {row.id: row.filename for row in rows}
 
         await conn.execute(
             _FINALIZE_QUERY,
@@ -295,4 +344,19 @@ async def finalize(
                     for citation in citations
                 ],
             )
-    return status, refusal_reason
+
+    return Outcome(
+        status=status,
+        refusal_reason=refusal_reason,
+        answer=answer,
+        citations=tuple(
+            Citation(
+                rank=citation["rank"],
+                document_id=citation["document_id"],
+                filename=live.get(citation["chunk_id"]),
+                page_number=citation["page_number"],
+                content=citation["content"],
+            )
+            for citation in citations
+        ),
+    )

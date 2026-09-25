@@ -1,4 +1,7 @@
-"""Retrieval metrics. Pure functions over ranked page references.
+"""Eval metrics. Pure functions over what one run produced.
+
+Two halves. Retrieval metrics score ranked page references; answer metrics score
+whole graph runs, from the rows `queries` and `query_traces` hold.
 
 `recall@k` and `hit@k` are reported separately and are not the same number.
 Recall is the fraction of a question's relevant pages found in the top k; hit is
@@ -11,23 +14,40 @@ Ranks are chunk ranks, not page ranks: two chunks from one page occupy two
 slots, because that is what they cost at retrieval time.
 """
 
-from collections.abc import Sequence
+import math
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from statistics import fmean
+from uuid import UUID
 
 from prism.eval.golden import PageRef
+from prism.graph.state import RefusalReason, TerminalStatus
 
 __all__ = [
+    "AnswerResult",
     "AnswerableSummary",
+    "AttemptsSummary",
+    "BudgetSummary",
+    "CitationSummary",
     "FloorSummary",
+    "GroundednessSummary",
     "QuestionResult",
+    "RefusalSummary",
     "UnanswerableSummary",
     "above_floor",
     "hit_at_k",
+    "percentile",
     "recall_at_k",
     "reciprocal_rank",
     "summarize_answerable",
+    "summarize_attempts",
+    "summarize_budget",
+    "summarize_citations",
     "summarize_floor",
+    "summarize_groundedness",
+    "summarize_refusals",
     "summarize_unanswerable",
 ]
 
@@ -176,4 +196,213 @@ def summarize_floor(results: Sequence[QuestionResult], floor: float) -> FloorSum
         answerable_emptied=emptied(answerable),
         unanswerable=len(unanswerable),
         unanswerable_emptied=emptied(unanswerable),
+    )
+
+
+# ---------------------------------------------------------- answer metrics
+
+
+@dataclass(frozen=True)
+class AnswerResult:
+    """One golden question run through the whole graph.
+
+    Every field comes from what the run wrote, not from the harness.
+    """
+
+    question_id: str
+    question: str
+    unanswerable: bool
+    query_id: UUID
+    status: TerminalStatus
+    refusal_reason: RefusalReason | None
+    retrieval_attempts: int
+    grounding_attempts: int
+    latency_ms: int | None
+    """NULL on a run that never finalized — unknown, not zero."""
+    cost_usd: Decimal | None
+    input_tokens: int
+    output_tokens: int
+    nodes: int
+    groundedness: float | None
+    citations: int
+    unresolved_citations: int
+    """Citations whose chunk was not in the passage set `generate` was shown."""
+    fabricated_citations: int
+    """Labels the binder dropped, over every generation attempt (ADR 0021)."""
+    degraded: bool
+    """A fallback or an error on some node (ADR 0011). Excluded from aggregates."""
+
+    @property
+    def refused(self) -> bool:
+        return self.status == "refused"
+
+
+@dataclass(frozen=True)
+class RefusalSummary:
+    """Abstention, both ways round.
+
+    The correct-refusal rate is what the project argues for; the false-refusal
+    rate is what it costs. Neither is readable without the other.
+    """
+
+    unanswerable: int
+    refused_correctly: int
+    answerable: int
+    refused_falsely: int
+    reasons: Mapping[str, int]
+    """Refusal reason counts over the unanswerable questions."""
+
+    @property
+    def correct_refusal_rate(self) -> float | None:
+        return self.refused_correctly / self.unanswerable if self.unanswerable else None
+
+    @property
+    def false_refusal_rate(self) -> float | None:
+        return self.refused_falsely / self.answerable if self.answerable else None
+
+
+def summarize_refusals(results: Sequence[AnswerResult]) -> RefusalSummary:
+    unanswerable = [r for r in results if r.unanswerable]
+    answerable = [r for r in results if not r.unanswerable]
+    return RefusalSummary(
+        unanswerable=len(unanswerable),
+        refused_correctly=sum(1 for r in unanswerable if r.refused),
+        answerable=len(answerable),
+        refused_falsely=sum(1 for r in answerable if r.refused),
+        reasons=Counter(r.refusal_reason for r in unanswerable if r.refusal_reason),
+    )
+
+
+@dataclass(frozen=True)
+class GroundednessSummary:
+    """`verify_grounding`'s aggregate, over the attempt that decided each run.
+
+    Split by outcome: tau separates them by construction, and a report that gave
+    one mean over both would hide how far apart the two sides sit.
+    """
+
+    tau: float
+    scored: int
+    mean: float | None
+    min: float | None
+    max: float | None
+    answered_mean: float | None
+    refused_mean: float | None
+
+
+def summarize_groundedness(results: Sequence[AnswerResult], tau: float) -> GroundednessSummary:
+    scored = [r for r in results if r.groundedness is not None]
+    scores = [r.groundedness for r in scored if r.groundedness is not None]
+    answered = [r.groundedness for r in scored if r.status == "answered" and r.groundedness]
+    refused = [r.groundedness for r in scored if r.refused and r.groundedness is not None]
+    return GroundednessSummary(
+        tau=tau,
+        scored=len(scored),
+        mean=fmean(scores) if scores else None,
+        min=min(scores) if scores else None,
+        max=max(scores) if scores else None,
+        answered_mean=fmean(answered) if answered else None,
+        refused_mean=fmean(refused) if refused else None,
+    )
+
+
+@dataclass(frozen=True)
+class CitationSummary:
+    """Whether a persisted citation still points at the evidence it was bound to."""
+
+    answered: int
+    citations: int
+    unresolved: int
+    fabricated: int
+
+    @property
+    def validity(self) -> float | None:
+        if not self.citations:
+            return None
+        return (self.citations - self.unresolved) / self.citations
+
+
+def summarize_citations(results: Sequence[AnswerResult]) -> CitationSummary:
+    return CitationSummary(
+        answered=sum(1 for r in results if r.status == "answered"),
+        citations=sum(r.citations for r in results),
+        unresolved=sum(r.unresolved_citations for r in results),
+        fabricated=sum(r.fabricated_citations for r in results),
+    )
+
+
+@dataclass(frozen=True)
+class AttemptsSummary:
+    """How many passes each loop took, counted independently."""
+
+    max_attempts: int
+    retrieval: Mapping[int, int]
+    grounding: Mapping[int, int]
+
+
+def summarize_attempts(results: Sequence[AnswerResult], max_attempts: int) -> AttemptsSummary:
+    return AttemptsSummary(
+        max_attempts=max_attempts,
+        retrieval=Counter(r.retrieval_attempts for r in results),
+        grounding=Counter(r.grounding_attempts for r in results),
+    )
+
+
+def percentile(values: Sequence[float], q: float) -> float | None:
+    """Nearest-rank percentile. At 31 points, interpolation would invent precision."""
+    if not values:
+        return None
+    if not 0.0 < q <= 1.0:
+        raise ValueError(f"q must be in (0, 1], got {q}")
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, math.ceil(q * len(ordered)) - 1)]
+
+
+@dataclass(frozen=True)
+class BudgetSummary:
+    """Cost and latency per query, against the configured budgets.
+
+    `unpriced` counts runs whose total is NULL — one call we could not price makes
+    the total unknown, not smaller (ADR 0013), so those are left out of the mean
+    rather than counted as zero.
+    """
+
+    runs: int
+    unpriced: int
+    mean_cost_usd: Decimal | None
+    max_cost_usd: Decimal | None
+    cost_budget_usd: Decimal
+    over_cost_budget: int
+    mean_input_tokens: float | None
+    mean_output_tokens: float | None
+    mean_nodes: float | None
+    p50_latency_ms: float | None
+    p95_latency_ms: float | None
+    max_latency_ms: float | None
+    latency_budget_ms: int
+    over_latency_budget: int
+
+
+def summarize_budget(
+    results: Sequence[AnswerResult], *, cost_budget_usd: float, latency_budget_s: float
+) -> BudgetSummary:
+    costs = [r.cost_usd for r in results if r.cost_usd is not None]
+    latencies = [float(r.latency_ms) for r in results if r.latency_ms is not None]
+    budget = Decimal(str(cost_budget_usd))
+    latency_budget_ms = int(latency_budget_s * 1000)
+    return BudgetSummary(
+        runs=len(results),
+        unpriced=sum(1 for r in results if r.cost_usd is None),
+        mean_cost_usd=(sum(costs, Decimal(0)) / len(costs)) if costs else None,
+        max_cost_usd=max(costs) if costs else None,
+        cost_budget_usd=budget,
+        over_cost_budget=sum(1 for cost in costs if cost > budget),
+        mean_input_tokens=fmean(r.input_tokens for r in results) if results else None,
+        mean_output_tokens=fmean(r.output_tokens for r in results) if results else None,
+        mean_nodes=fmean(r.nodes for r in results) if results else None,
+        p50_latency_ms=percentile(latencies, 0.5),
+        p95_latency_ms=percentile(latencies, 0.95),
+        max_latency_ms=max(latencies) if latencies else None,
+        latency_budget_ms=latency_budget_ms,
+        over_latency_budget=sum(1 for ms in latencies if ms > latency_budget_ms),
     )

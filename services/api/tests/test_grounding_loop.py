@@ -596,7 +596,7 @@ async def test_a_passing_verification_with_no_citations_refuses(
         question=QUESTION,
     )
 
-    status, reason = await finalize(
+    outcome = await finalize(
         query_id=query_id,
         tenant_id=answerable.tenant_id,
         final=_state(
@@ -612,7 +612,9 @@ async def test_a_passing_verification_with_no_citations_refuses(
         latency_ms=12,
     )
 
-    assert (status, reason) == ("refused", "insufficient_evidence")
+    assert (outcome.status, outcome.refusal_reason) == ("refused", "insufficient_evidence")
+    assert outcome.answer is None
+    assert outcome.citations == ()
     final = await _query_row(query_id)
     assert final["status"] == "refused"
     assert final["final_answer"] is None

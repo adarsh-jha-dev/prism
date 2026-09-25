@@ -82,7 +82,7 @@ def test_run_block_matches_the_committed_set(
 
 def test_records_what_makes_a_run_comparable(baseline: dict[str, Any]) -> None:
     # Changing any of these voids the comparison, so a baseline must carry them.
-    assert baseline["schema"] in (1, 2, 3)
+    assert baseline["schema"] in (1, 2, 3, 4)
     for field in ("embedding_model", "embedding_dim", "chunk_size_chars", "chunk_overlap_chars"):
         assert baseline["run"][field] is not None
     assert "query_prefix" in baseline["run"]
@@ -97,6 +97,44 @@ def test_schema_2_names_its_retriever(baseline: dict[str, Any]) -> None:
         assert "retriever" not in baseline["run"]
         return
     assert baseline["run"]["retriever"] in ("vector", "hybrid", "rerank")
+
+
+def test_an_answer_baseline_records_the_models_and_the_policy(baseline: dict[str, Any]) -> None:
+    """A refusal rate is evidence only against the models and constants that produced it.
+
+    Schema 4 added the answer block; a run without one measured retrieval alone.
+    """
+    answers = baseline.get("answers")
+    if answers is None:
+        return
+    for role in ("planner", "grader", "generator", "reranker"):
+        assert answers["models"][role], role
+    for constant in (
+        "abstention_threshold",
+        "max_attempts",
+        "doc_relevance_threshold",
+        "rerank_score_floor",
+    ):
+        assert answers["policy"][constant] is not None, constant
+    assert answers["groundedness"]["tau"] == answers["policy"]["abstention_threshold"]
+
+
+def test_an_answer_baseline_covers_the_committed_questions(
+    baseline: dict[str, Any], golden: GoldenSet
+) -> None:
+    answers = baseline.get("answers")
+    if answers is None:
+        return
+    recorded = {q["id"] for q in answers["questions"]}
+    assert recorded == {q.id for q in golden.questions}
+    # Every run reached one of the three terminal states.
+    assert all(q["status"] in ("cached", "answered", "refused") for q in answers["questions"])
+    # And a refusal carries a reason rather than a boolean.
+    assert all(
+        q["refusal_reason"] in ("no_relevant_evidence", "insufficient_evidence")
+        for q in answers["questions"]
+        if q["status"] == "refused"
+    )
 
 
 def test_a_hybrid_baseline_reports_no_similarity_calibration(baseline: dict[str, Any]) -> None:

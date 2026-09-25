@@ -8,26 +8,62 @@ the numbers do.
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from prism.config import Settings
 from prism.eval.golden import GoldenSet
 from prism.eval.metrics import (
     AnswerableSummary,
+    AnswerResult,
+    AttemptsSummary,
+    BudgetSummary,
+    CitationSummary,
     FloorSummary,
+    GroundednessSummary,
     QuestionResult,
+    RefusalSummary,
     UnanswerableSummary,
     above_floor,
     hit_at_k,
     recall_at_k,
     summarize_answerable,
+    summarize_attempts,
+    summarize_budget,
+    summarize_citations,
     summarize_floor,
+    summarize_groundedness,
+    summarize_refusals,
     summarize_unanswerable,
 )
 from prism.eval.runner import CorpusStats, Retriever
 
-__all__ = ["Report", "build_report", "render_json", "render_text"]
+__all__ = ["AnswerBlock", "Report", "build_report", "render_json", "render_text"]
+
+
+class AnswerBlock:
+    """What the graph did with the same question set.
+
+    A degraded run is excluded from every aggregate and counted, never dropped
+    (ADR 0011): losing an observation is itself a number worth reading.
+    """
+
+    def __init__(self, results: Sequence[AnswerResult], settings: Settings) -> None:
+        self.settings = settings
+        self.results = tuple(results)
+        self.scored = tuple(r for r in self.results if not r.degraded)
+        self.excluded = tuple(r for r in self.results if r.degraded)
+        self.refusal: RefusalSummary = summarize_refusals(self.scored)
+        self.groundedness: GroundednessSummary = summarize_groundedness(
+            self.scored, settings.abstention_threshold
+        )
+        self.citations: CitationSummary = summarize_citations(self.scored)
+        self.attempts: AttemptsSummary = summarize_attempts(self.scored, settings.max_attempts)
+        self.budget: BudgetSummary = summarize_budget(
+            self.scored,
+            cost_budget_usd=settings.cost_budget_usd,
+            latency_budget_s=settings.latency_budget_s,
+        )
 
 
 class Report:
@@ -42,8 +78,10 @@ class Report:
         settings: Settings,
         ks: Sequence[int],
         retriever: Retriever,
+        answers: Sequence[AnswerResult] | None = None,
     ) -> None:
         self.retriever = retriever
+        self.answers = None if answers is None else AnswerBlock(answers, settings)
         self.golden = golden
         self.stats = stats
         self.settings = settings
@@ -79,6 +117,7 @@ def build_report(
     settings: Settings,
     ks: Sequence[int],
     retriever: Retriever,
+    answers: Sequence[AnswerResult] | None = None,
 ) -> Report:
     return Report(
         golden=golden,
@@ -87,6 +126,7 @@ def build_report(
         settings=settings,
         ks=ks,
         retriever=retriever,
+        answers=answers,
     )
 
 
@@ -208,6 +248,9 @@ def render_text(report: Report) -> str:
             lines.append(f"      expected {expected}")
         lines.append("")
 
+    if report.answers is not None:
+        lines.extend(_answer_lines(report.answers))
+
     quoted = [r for r in report.results if r.quote_found is not None]
     if quoted:
         missing = [r for r in quoted if not r.quote_found]
@@ -221,6 +264,100 @@ def render_text(report: Report) -> str:
                 lines.append(f"    {result.question_id}")
 
     return "\n".join(lines)
+
+
+def _rate(value: float | None) -> str:
+    return "  n/a " if value is None else _pct(value)
+
+
+def _distribution(counts: Mapping[int, int], ceiling: int) -> str:
+    return "  ".join(f"{n}:{counts.get(n, 0)}" for n in range(0, ceiling + 1))
+
+
+def _answer_lines(block: AnswerBlock) -> list[str]:
+    """The graph's own numbers. Correct refusal first — it is the headline."""
+    refusal, grounding = block.refusal, block.groundedness
+    citations, budget = block.citations, block.budget
+    settings = block.settings
+    lines = [
+        f"Answer — {len(block.scored)} of {len(block.results)} runs scored",
+        f"  Models    plan {settings.planner_model}   grade/verify {settings.grader_model}   "
+        f"generate {settings.generator_model}",
+        f"  Policy    tau {settings.abstention_threshold:.2f}   "
+        f"attempts {settings.max_attempts} per loop   "
+        f"doc relevance {settings.doc_relevance_threshold:.2f}",
+    ]
+    if block.excluded:
+        lines.append(
+            f"  {len(block.excluded)} excluded as degraded (ADR 0011): "
+            + ", ".join(r.question_id for r in block.excluded)
+        )
+    lines.append("")
+
+    lines.append(
+        f"  correct refusal   {_rate(refusal.correct_refusal_rate)}   "
+        f"{refusal.refused_correctly} of {refusal.unanswerable} unanswerable refused"
+    )
+    lines.append(
+        f"  false refusal     {_rate(refusal.false_refusal_rate)}   "
+        f"{refusal.refused_falsely} of {refusal.answerable} answerable refused"
+    )
+    for reason, count in sorted(refusal.reasons.items()):
+        lines.append(f"      {reason:<24} {count}")
+    lines.append("")
+
+    lines.append(f"Groundedness — verify_grounding's aggregate, tau {grounding.tau:.2f}")
+    if grounding.scored:
+        lines.append(
+            f"  {grounding.scored} scored   mean {grounding.mean:.3f}   "
+            f"min {grounding.min:.3f}   max {grounding.max:.3f}"
+        )
+        answered = "n/a" if grounding.answered_mean is None else f"{grounding.answered_mean:.3f}"
+        refused = "n/a" if grounding.refused_mean is None else f"{grounding.refused_mean:.3f}"
+        lines.append(f"  answered {answered}   refused {refused}")
+    else:
+        lines.append("  no run reached the gate")
+    lines.append("")
+
+    lines.append("Citations — every citation must resolve to a chunk generate was shown")
+    lines.append(
+        f"  {citations.citations} over {citations.answered} answered runs   "
+        f"validity {_rate(citations.validity)}   unresolved {citations.unresolved}"
+    )
+    lines.append(f"  {citations.fabricated} label(s) dropped by the binder before persisting")
+    lines.append("")
+
+    ceiling = block.attempts.max_attempts
+    lines.append(f"Attempts — counted independently, max {ceiling} each")
+    lines.append(f"  retrieval   {_distribution(block.attempts.retrieval, ceiling)}")
+    lines.append(f"  grounding   {_distribution(block.attempts.grounding, ceiling)}")
+    lines.append("")
+
+    lines.append("Cost and latency per query, from the trace rows")
+    if budget.mean_cost_usd is None:
+        lines.append(f"  cost      no priced run ({budget.unpriced} unpriced)")
+    else:
+        lines.append(
+            f"  cost      mean ${budget.mean_cost_usd:.8f}   max ${budget.max_cost_usd:.8f}   "
+            f"{budget.over_cost_budget} over the ${budget.cost_budget_usd:.4f} budget"
+        )
+        if budget.unpriced:
+            lines.append(f"            {budget.unpriced} run(s) unpriced, left out of the mean")
+    if budget.mean_input_tokens is not None and budget.mean_output_tokens is not None:
+        lines.append(
+            f"  tokens    mean {budget.mean_input_tokens:.0f} in / "
+            f"{budget.mean_output_tokens:.0f} out over {budget.mean_nodes:.1f} nodes"
+        )
+    if budget.p50_latency_ms is not None and budget.p95_latency_ms is not None:
+        lines.append(
+            f"  latency   p50 {budget.p50_latency_ms / 1000:.2f}s   "
+            f"p95 {budget.p95_latency_ms / 1000:.2f}s   "
+            f"max {(budget.max_latency_ms or 0) / 1000:.2f}s   "
+            f"{budget.over_latency_budget} over the "
+            f"{budget.latency_budget_ms / 1000:.0f}s budget"
+        )
+    lines.append("")
+    return lines
 
 
 def _question_payload(
@@ -244,8 +381,8 @@ def _question_payload(
 def render_json(report: Report) -> str:
     settings = report.settings
     payload: dict[str, Any] = {
-        # 2 added `retriever`; 3 added the rerank retriever and its blocks.
-        "schema": 3,
+        # 2 added `retriever`; 3 the rerank retriever and its blocks; 4 `answers`.
+        "schema": 4,
         "run": {
             "collection": report.golden.collection,
             "retriever": report.retriever,
@@ -284,6 +421,8 @@ def render_json(report: Report) -> str:
             for r, u in zip(report.results, report.unfloored, strict=True)
         ],
     }
+    if report.answers is not None:
+        payload["answers"] = _answer_payload(report.answers)
     if report.floor is not None:
         payload["run"]["rerank"] = {
             "model": settings.reranker_model,
@@ -303,3 +442,94 @@ def render_json(report: Report) -> str:
             "unanswerable_emptied": report.floor.unanswerable_emptied,
         }
     return json.dumps(payload, indent=2, sort_keys=False)
+
+
+def _answer_payload(block: AnswerBlock) -> dict[str, Any]:
+    refusal, grounding = block.refusal, block.groundedness
+    citations, budget, attempts = block.citations, block.budget, block.attempts
+    settings = block.settings
+    return {
+        "runs": len(block.results),
+        # A refusal rate is comparable only against the models that graded and
+        # generated it, and the constants they decided under.
+        "models": {
+            "planner": settings.planner_model,
+            "grader": settings.grader_model,
+            "generator": settings.generator_model,
+            "reranker": settings.reranker_model,
+        },
+        "policy": {
+            "abstention_threshold": settings.abstention_threshold,
+            "max_attempts": settings.max_attempts,
+            "doc_relevance_threshold": settings.doc_relevance_threshold,
+            "rerank_score_floor": settings.rerank_score_floor,
+        },
+        "scored": len(block.scored),
+        "excluded_degraded": [r.question_id for r in block.excluded],
+        "refusal": {
+            "unanswerable": refusal.unanswerable,
+            "refused_correctly": refusal.refused_correctly,
+            "correct_refusal_rate": refusal.correct_refusal_rate,
+            "answerable": refusal.answerable,
+            "refused_falsely": refusal.refused_falsely,
+            "false_refusal_rate": refusal.false_refusal_rate,
+            "reasons": dict(sorted(refusal.reasons.items())),
+        },
+        "groundedness": {
+            "tau": grounding.tau,
+            "scored": grounding.scored,
+            "mean": grounding.mean,
+            "min": grounding.min,
+            "max": grounding.max,
+            "answered_mean": grounding.answered_mean,
+            "refused_mean": grounding.refused_mean,
+        },
+        "citations": {
+            "answered": citations.answered,
+            "citations": citations.citations,
+            "unresolved": citations.unresolved,
+            "validity": citations.validity,
+            "fabricated": citations.fabricated,
+        },
+        "attempts": {
+            "max_attempts": attempts.max_attempts,
+            "retrieval": {str(k): v for k, v in sorted(attempts.retrieval.items())},
+            "grounding": {str(k): v for k, v in sorted(attempts.grounding.items())},
+        },
+        "budget": {
+            "unpriced": budget.unpriced,
+            "mean_cost_usd": None if budget.mean_cost_usd is None else str(budget.mean_cost_usd),
+            "max_cost_usd": None if budget.max_cost_usd is None else str(budget.max_cost_usd),
+            "cost_budget_usd": str(budget.cost_budget_usd),
+            "over_cost_budget": budget.over_cost_budget,
+            "mean_input_tokens": budget.mean_input_tokens,
+            "mean_output_tokens": budget.mean_output_tokens,
+            "mean_nodes": budget.mean_nodes,
+            "p50_latency_ms": budget.p50_latency_ms,
+            "p95_latency_ms": budget.p95_latency_ms,
+            "max_latency_ms": budget.max_latency_ms,
+            "latency_budget_ms": budget.latency_budget_ms,
+            "over_latency_budget": budget.over_latency_budget,
+        },
+        "questions": [
+            {
+                "id": r.question_id,
+                "unanswerable": r.unanswerable,
+                "status": r.status,
+                "refusal_reason": r.refusal_reason,
+                "retrieval_attempts": r.retrieval_attempts,
+                "grounding_attempts": r.grounding_attempts,
+                "groundedness": r.groundedness,
+                "citations": r.citations,
+                "unresolved_citations": r.unresolved_citations,
+                "fabricated_citations": r.fabricated_citations,
+                "latency_ms": r.latency_ms,
+                "cost_usd": None if r.cost_usd is None else str(r.cost_usd),
+                "input_tokens": r.input_tokens,
+                "output_tokens": r.output_tokens,
+                "nodes": r.nodes,
+                "degraded": r.degraded,
+            }
+            for r in block.results
+        ],
+    }

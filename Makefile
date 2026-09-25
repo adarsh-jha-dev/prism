@@ -5,7 +5,7 @@ WEB_DIR := apps/web
 
 .DEFAULT_GOAL := help
 .PHONY: help up down logs api web install test test-all test-ci lint fmt migrate revision \
-	eval eval-ingest eval-hybrid eval-vector reranker-fetch record-fixtures
+	eval eval-ingest eval-answer eval-hybrid eval-vector reranker-fetch record-fixtures
 
 help: ## List targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -53,6 +53,14 @@ reranker-fetch: ## Download the pinned reranker weights into var/models (~570MB)
 
 eval: ## Golden set vs hybrid retrieval + rerank (needs `make eval-ingest`, `make reranker-fetch`)
 	cd $(API_DIR) && uv run python -m prism.eval recall --json eval/runs/latest.json
+
+# The timeouts are ceilings on a hung call, not budgets: one machine running a 32b
+# generator queues embeds and rerank batches behind it, and a ceiling that trips
+# fails the whole run. VISION_ENABLED=false keeps the corpus comparable.
+eval-answer: ## Golden set through the whole graph — refusal correctness, cost, latency
+	cd $(API_DIR) && VISION_ENABLED=false RERANK_TIMEOUT_S=600 CHAT_TIMEOUT_S=600 \
+		EMBED_TIMEOUT_S=600 LANE_QUEUE_TIMEOUT_S=600 \
+		uv run python -m prism.eval answer --concurrency 2 --json eval/runs/answers.json
 
 eval-hybrid: ## Same golden set against hybrid retrieval without rerank
 	cd $(API_DIR) && uv run python -m prism.eval recall --retriever hybrid --json eval/runs/hybrid.json
