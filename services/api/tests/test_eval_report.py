@@ -77,7 +77,9 @@ def test_rerank_scores_are_compared_with_the_floor_never_tau() -> None:
 
 def test_json_records_the_reranker_and_the_unfloored_top_score() -> None:
     payload = json.loads(render_json(_report()))
-    assert payload["schema"] == 3
+    assert payload["schema"] == 4
+    # A retrieval-only run carries no answer block rather than an empty one.
+    assert "answers" not in payload
     assert payload["run"]["rerank"]["score_floor"] == 0.44
     assert payload["run"]["rerank"]["quantization"] == "int8"
     emptied = next(q for q in payload["questions"] if q["id"] == "gq-2")

@@ -1,8 +1,11 @@
-"""`python -m prism.eval ingest` and `python -m prism.eval recall`.
+"""`python -m prism.eval ingest`, `recall` and `answer`.
 
-Both are dev entry points and both talk to the local stack. Neither can reach a
-paid provider: retrieval embeds on the `ollama` lane, rerank runs in-process, and
-nothing here generates.
+All three are dev entry points and all three talk to the local stack. None can
+reach a paid provider: every lane a node uses here is `ollama` local or
+in-process, and the paid lanes are unwired.
+
+`recall` measures retrieval. `answer` runs the whole graph and reports what the
+correction loop did with the same question set, alongside the retrieval metrics.
 """
 
 import argparse
@@ -11,8 +14,9 @@ import sys
 from pathlib import Path
 
 from prism.config import get_settings
-from prism.db import get_engine
+from prism.db import close_checkpoint_pool, get_engine
 from prism.embeddings import EmbeddingError, get_embedding_provider
+from prism.eval.answers import run_answer_set
 from prism.eval.golden import GoldenSetError, load_corpus, load_golden_set
 from prism.eval.ingest import CorpusError, ingest_corpus
 from prism.eval.report import build_report, render_json, render_text
@@ -62,6 +66,21 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         metavar="RECALL",
         help="exit non-zero if recall at the largest k falls below this",
+    )
+
+    answer = sub.add_parser(
+        "answer",
+        parents=[common],
+        help="run the golden set through the whole graph and report what it refused",
+    )
+    answer.add_argument("-k", "--at", type=int, nargs="+", default=list(DEFAULT_KS), dest="ks")
+    answer.add_argument("--json", type=Path, default=None, help="also write the run as JSON")
+    answer.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        metavar="N",
+        help="queries in flight at once; defaults to the ollama lane's cap",
     )
     return parser
 
@@ -138,10 +157,62 @@ async def _recall(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _answer(args: argparse.Namespace) -> int:
+    """Both halves over one collection: retrieval as `recall` measures it, then the graph."""
+    ks = sorted({k for k in args.ks if k > 0})
+    if not ks:
+        print("at least one positive k is required", file=sys.stderr)
+        return 2
+
+    corpus = load_corpus(args.manifest)
+    golden = load_golden_set(args.golden, corpus)
+    if not golden.unanswerable:
+        print("the golden set has no unanswerable questions to refuse", file=sys.stderr)
+        return 2
+
+    settings = get_settings()
+    ref = await resolve_collection(golden.collection, tenant=args.tenant)
+    reranker = get_reranker()
+    await reranker.load()
+
+    results = await run_golden_set(
+        golden,
+        collection=ref,
+        k=max(ks),
+        retriever="rerank",
+        reranker=reranker,
+        settings=settings,
+    )
+    answers = await run_answer_set(
+        golden,
+        collection=ref,
+        concurrency=args.concurrency,
+        settings=settings,
+    )
+    report = build_report(
+        golden=golden,
+        results=results,
+        stats=await collection_stats(ref.collection_id),
+        settings=settings,
+        ks=ks,
+        retriever="rerank",
+        answers=answers,
+    )
+
+    print(render_text(report))
+    if args.json is not None:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(render_json(report) + "\n", encoding="utf-8")
+        print(f"\nwrote {args.json}")
+    return 0
+
+
 async def _run(args: argparse.Namespace) -> int:
     try:
         if args.command == "ingest":
             return await _ingest(args)
+        if args.command == "answer":
+            return await _answer(args)
         return await _recall(args)
     except (GoldenSetError, CorpusError, CollectionNotResolvedError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
@@ -153,6 +224,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"{exc}\nIs Ollama running with the embedding model pulled?", file=sys.stderr)
         return 2
     finally:
+        await close_checkpoint_pool()
         await get_engine().dispose()
 
 
