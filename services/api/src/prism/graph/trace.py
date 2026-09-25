@@ -27,6 +27,7 @@ from prism.chat.base import Usage
 from prism.config import get_settings
 from prism.core.ids import uuid7
 from prism.db import get_engine
+from prism.graph.events import NodeEvent, publish
 from prism.graph.state import GraphState
 from prism.pricing import price
 
@@ -258,6 +259,24 @@ async def write_trace(
                 "output_truncated": output_truncated,
             },
         )
+
+    # After the commit, so an event never describes a row that is not there.
+    publish(
+        NodeEvent(
+            query_id=query_id,
+            node=node_name,
+            sequence=sequence,
+            attempt=attempt,
+            status=status,
+            verdict=trace.verdict,
+            started_at=started_at,
+            duration_ms=duration_ms,
+            error=error,
+            provider=usage.provider if usage else None,
+            model=usage.model if usage else None,
+            cost_usd=priced.cost_usd if priced else None,
+        )
+    )
 
 
 def traced(
