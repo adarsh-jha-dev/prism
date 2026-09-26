@@ -162,6 +162,24 @@ def test_the_grading_schema_forbids_an_empty_verdict_list() -> None:
         RelevanceVerdicts.model_validate({"verdicts": []})
 
 
+def test_the_grading_schema_asks_for_exactly_one_verdict_per_passage() -> None:
+    """One verdict was enough to validate, and an unbounded list ran into max_tokens."""
+    from prism.graph.nodes import _relevance_schema
+
+    schema = _relevance_schema(3)
+    verdicts = schema.model_json_schema()["properties"]["verdicts"]
+    assert (verdicts["minItems"], verdicts["maxItems"]) == (3, 3)
+    assert schema.__name__ == "RelevanceVerdicts"
+
+    one = {"label": 1, "score": 0.9}
+    with pytest.raises(ValidationError):
+        schema.model_validate({"verdicts": [one]})
+    with pytest.raises(ValidationError):
+        schema.model_validate({"verdicts": [one] * 4})
+    with pytest.raises(ValidationError):
+        schema.model_validate({"verdicts": [one, one, {"label": 4, "score": 0.9}]})
+
+
 def test_a_verdict_for_a_passage_that_was_not_sent_is_dropped() -> None:
     """Labels are matched, never positions: a shifted list says nothing itself."""
     from prism.graph.nodes import _scores_by_chunk

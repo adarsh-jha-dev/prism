@@ -22,7 +22,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from prism.chat import Message
 from prism.chat.base import Usage
@@ -175,6 +175,26 @@ class RelevanceVerdicts(BaseModel):
     # It is also the honest contract: a grader scores every passage, and a
     # passage it finds irrelevant scores low rather than going unmentioned.
     verdicts: list[ChunkRelevance] = Field(min_length=1)
+
+
+def _relevance_schema(passages: int) -> type[RelevanceVerdicts]:
+    """`RelevanceVerdicts` fitted to one call: exactly one verdict per passage sent.
+
+    `min_length=1` alone let `llama3.1:8b` score passage [1] and stop, failing
+    every other passage for want of a verdict, and set no upper bound, so a
+    grader could emit entries until `max_tokens` cut it mid-JSON (ADR 0025).
+    Same name, so logs and stubs still key on `RelevanceVerdicts`.
+    """
+    verdict = create_model(
+        "ChunkRelevance",
+        __base__=ChunkRelevance,
+        label=(int, Field(ge=1, le=passages)),
+    )
+    return create_model(
+        "RelevanceVerdicts",
+        __base__=RelevanceVerdicts,
+        verdicts=(list[verdict], Field(min_length=passages, max_length=passages)),  # type: ignore[valid-type]
+    )
 
 
 class SpanGroundedness(BaseModel):
@@ -425,7 +445,7 @@ async def grade_docs(state: GraphState, trace: TraceContext) -> dict[str, Any]:
             Message(role="system", content=_GRADER_SYSTEM),
             Message(role="user", content=_grading_prompt(state["question"], chunks)),
         ],
-        RelevanceVerdicts,
+        _relevance_schema(len(chunks)),
         model=settings.grader_model,
         max_tokens=_GRADER_MAX_TOKENS,
     )

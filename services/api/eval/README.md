@@ -437,6 +437,22 @@ questions, and those were 5 of the answer baseline's 6 correct refusals. At 0.01
 four of them reach `grade_docs` and `verify_grounding`, so the next answer run
 has to show correct refusal holding rather than assume it.
 
+### At floor 0.01 the grader, not the floor, refuses
+
+One answer run at floor 0.01, kept local and not pinned because 6 of 31 runs
+degraded. False refusal moved from 20/24 to **17/21**; the reasons moved rather
+than the rate — `no_relevant_evidence` 12 → 3, `insufficient_evidence` 8 → 14.
+
+The grader was answering one passage and dropping the rest: 134 of 177 graded
+passages got no verdict, so `generate` saw one passage, cited nothing, and 46 of
+54 groundedness scores were a 0.0 written with no verifier call. Where the
+verifier did run, span scores were 0.5 or 1.0 only. So groundedness is collapsed
+upstream of its aggregate, and changing min-over-spans would move almost nothing.
+All six degraded runs were `grade_docs` truncated at `max_tokens`.
+
+ADR 0025 makes the grader return exactly one verdict per passage. **It has not
+been measured**; the next `make eval-answer` is its measurement.
+
 `make eval` writes `runs/latest.json`, which stays ignored. Pinning a baseline
 means copying one to `runs/baseline-<date>.json` and committing it — the report
 carries no timestamp of its own, so the filename is the record.
