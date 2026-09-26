@@ -27,6 +27,42 @@ queues embeds and rerank batches behind a 32b generation, and a ceiling that
 trips is a lost run rather than a slow one. A run that fails outright costs one
 observation, not the set — it is collected, marked degraded and excluded.
 
+## Phase 2, as it stands
+
+Written against `baseline-2026-09-26-answers.json`, before any fix to it lands.
+The corrected numbers belong beside this, not in place of it.
+
+**The system refuses almost everything.** 20 of 24 answerable questions were
+refused — an **83% false refusal rate** — so it answered 4. Across all 30 scored
+runs it refused 26.
+
+**6/6 correct refusal is therefore not the result it looks like.** A system that
+refuses 87% of what it is asked will refuse most unanswerable questions whatever
+its judgement; refusing everything scores 6/6 too. Correct refusal is only
+evidence of judgement read beside false refusal, and at 83% the graph is four
+answers better than refusing everything.
+
+**The largest single cause is the rerank floor.** At 0.44 it cuts recall@10 from
+0.68 before the floor to 0.36 after it, empties 9 of 25 answerable questions
+before any model reads them, and hands `grade_docs` zero candidates on 42 of 70
+calls. 12 of the 20 false refusals are `no_relevant_evidence`. This predates
+ADR 0020: `baseline-2026-09-16-rerank.json` has the same 0.36, because with
+`rerank_candidate_k = retrieval_top_k = 10` both orders floor the same ten
+chunks. The floor was never fitted; it kept its `CLAUDE.md` value.
+
+**The rest is the grounding gate, and its signal is nearly binary.** Every
+answered run scored groundedness 1.0; of the nine refused at `verify_grounding`,
+eight scored 0.0 and one 0.5. A gate whose score has two values cannot be tuned
+by moving tau.
+
+**Latency is not measuring the design.** p50 167s, p95 377s, 30 of 30 over the
+6s budget, with `qwen2.5:32b` generating first and up to three times.
+
+`gq-024` is excluded as degraded. Its `queries` row never finalized — latency
+NULL, attempts still at the inserted zeros — so the run raised mid-graph. That
+is the `status = 'error'` shape of degradation, not a rerank fallback, which
+returns normally and finalizes.
+
 ## Files
 
 | | |
