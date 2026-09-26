@@ -112,8 +112,9 @@ class Settings(BaseSettings):
     # quantities that share a 0-1 scale, and tau is the other one (ADR 0019).
     # Uncalibrated, and never derived from abstention_threshold.
     doc_relevance_threshold: float = 0.5
-    # Applies to the reranker's sigmoid, never its raw logit.
-    rerank_score_floor: float = 0.44
+    # Applies to the reranker's sigmoid, never its raw logit. Fitted on the golden
+    # set at rerank_candidate_k 10 (ADR 0024).
+    rerank_score_floor: float = 0.01
 
     # Per-query budgets for the cost-aware router. No eligible provider under
     # both is a refusal, not an overspend.

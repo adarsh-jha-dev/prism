@@ -1,0 +1,900 @@
+{
+  "schema": 4,
+  "run": {
+    "collection": "prism-eval",
+    "retriever": "rerank",
+    "documents": 7,
+    "chunks": 482,
+    "embedding_model": "nomic-embed-text",
+    "embedding_dim": 768,
+    "query_prefix": null,
+    "chunk_size_chars": 1200,
+    "chunk_overlap_chars": 150,
+    "questions": 31,
+    "answerable": 25,
+    "unanswerable": 6,
+    "rerank": {
+      "model": "bge-reranker-v2-m3",
+      "revision": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+      "quantization": "int8",
+      "candidate_k": 10,
+      "max_tokens": 512,
+      "score_floor": 0.01
+    }
+  },
+  "retrieval": [
+    {
+      "k": 1,
+      "recall_at_k": 0.38,
+      "hit_at_k": 0.4,
+      "ceiling": 0.92
+    },
+    {
+      "k": 3,
+      "recall_at_k": 0.48,
+      "hit_at_k": 0.48,
+      "ceiling": 1.0
+    },
+    {
+      "k": 5,
+      "recall_at_k": 0.56,
+      "hit_at_k": 0.56,
+      "ceiling": 1.0
+    },
+    {
+      "k": 10,
+      "recall_at_k": 0.66,
+      "hit_at_k": 0.68,
+      "ceiling": 1.0
+    }
+  ],
+  "mrr": 0.4706666666666667,
+  "refusal_calibration": {
+    "questions": 6,
+    "threshold": 0.01,
+    "above_threshold": 4,
+    "max_score": 0.5753881056803647,
+    "mean_score": 0.21948506255523115,
+    "min_score": 0.0044676800929923976
+  },
+  "questions": [
+    {
+      "id": "gq-001",
+      "unanswerable": false,
+      "retrieved": [
+        "attention-is-all-you-need.pdf:p4",
+        "attention-is-all-you-need.pdf:p4",
+        "attention-is-all-you-need.pdf:p4",
+        "attention-is-all-you-need.pdf:p9",
+        "attention-is-all-you-need.pdf:p5"
+      ],
+      "top_score": 0.8355458413473605,
+      "quote_found": true,
+      "relevant": [
+        "attention-is-all-you-need.pdf:p4"
+      ],
+      "recall": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-002",
+      "unanswerable": false,
+      "retrieved": [
+        "attention-is-all-you-need.pdf:p5",
+        "attention-is-all-you-need.pdf:p9",
+        "attention-is-all-you-need.pdf:p7",
+        "attention-is-all-you-need.pdf:p4",
+        "attention-is-all-you-need.pdf:p4",
+        "attention-is-all-you-need.pdf:p15",
+        "attention-is-all-you-need.pdf:p2",
+        "attention-is-all-you-need.pdf:p3",
+        "attention-is-all-you-need.pdf:p13"
+      ],
+      "top_score": 0.9422221977118915,
+      "quote_found": true,
+      "relevant": [
+        "attention-is-all-you-need.pdf:p5"
+      ],
+      "recall": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-003",
+      "unanswerable": false,
+      "retrieved": [
+        "attention-is-all-you-need.pdf:p6",
+        "attention-is-all-you-need.pdf:p9",
+        "attention-is-all-you-need.pdf:p9",
+        "attention-is-all-you-need.pdf:p3",
+        "attention-is-all-you-need.pdf:p5",
+        "attention-is-all-you-need.pdf:p8"
+      ],
+      "top_score": 0.5627890483112867,
+      "quote_found": true,
+      "relevant": [
+        "attention-is-all-you-need.pdf:p6"
+      ],
+      "recall": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-004",
+      "unanswerable": false,
+      "retrieved": [
+        "dense-passage-retrieval.pdf:p6",
+        "dense-passage-retrieval.pdf:p5",
+        "dense-passage-retrieval.pdf:p5",
+        "dense-passage-retrieval.pdf:p1",
+        "dense-passage-retrieval.pdf:p5",
+        "dense-passage-retrieval.pdf:p8",
+        "dense-passage-retrieval.pdf:p12",
+        "dense-passage-retrieval.pdf:p5",
+        "dense-passage-retrieval.pdf:p9"
+      ],
+      "top_score": 0.9911546308720097,
+      "quote_found": true,
+      "relevant": [
+        "dense-passage-retrieval.pdf:p6"
+      ],
+      "recall": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-005",
+      "unanswerable": false,
+      "retrieved": [
+        "dense-passage-retrieval.pdf:p1",
+        "dense-passage-retrieval.pdf:p7",
+        "dense-passage-retrieval.pdf:p7",
+        "hnsw.pdf:p7",
+        "dense-passage-retrieval.pdf:p9",
+        "dense-passage-retrieval.pdf:p1",
+        "hnsw.pdf:p7"
+      ],
+      "top_score": 0.6739423188693953,
+      "quote_found": true,
+      "relevant": [
+        "dense-passage-retrieval.pdf:p7"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-006",
+      "unanswerable": false,
+      "retrieved": [
+        "dense-passage-retrieval.pdf:p6",
+        "dense-passage-retrieval.pdf:p5",
+        "dense-passage-retrieval.pdf:p6",
+        "dense-passage-retrieval.pdf:p3",
+        "dense-passage-retrieval.pdf:p2",
+        "dense-passage-retrieval.pdf:p6",
+        "dense-passage-retrieval.pdf:p4",
+        "dense-passage-retrieval.pdf:p13",
+        "dense-passage-retrieval.pdf:p12",
+        "dense-passage-retrieval.pdf:p3"
+      ],
+      "top_score": 0.9489538745445172,
+      "quote_found": true,
+      "relevant": [
+        "dense-passage-retrieval.pdf:p3"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-007",
+      "unanswerable": false,
+      "retrieved": [
+        "dense-passage-retrieval.pdf:p4",
+        "rag-knowledge-intensive-nlp.pdf:p8",
+        "self-rag.pdf:p20",
+        "lost-in-the-middle.pdf:p14",
+        "lost-in-the-middle.pdf:p14",
+        "lost-in-the-middle.pdf:p3"
+      ],
+      "top_score": 0.927286875149898,
+      "quote_found": true,
+      "relevant": [
+        "dense-passage-retrieval.pdf:p4"
+      ],
+      "recall": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-008",
+      "unanswerable": false,
+      "retrieved": [
+        "rag-knowledge-intensive-nlp.pdf:p3",
+        "corrective-rag.pdf:p3",
+        "rag-knowledge-intensive-nlp.pdf:p8",
+        "rag-knowledge-intensive-nlp.pdf:p6",
+        "corrective-rag.pdf:p2",
+        "rag-knowledge-intensive-nlp.pdf:p7",
+        "corrective-rag.pdf:p2",
+        "corrective-rag.pdf:p1",
+        "corrective-rag.pdf:p2"
+      ],
+      "top_score": 0.6453819635275776,
+      "quote_found": false,
+      "relevant": [
+        "rag-knowledge-intensive-nlp.pdf:p3"
+      ],
+      "recall": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-009",
+      "unanswerable": false,
+      "retrieved": [
+        "rag-knowledge-intensive-nlp.pdf:p7",
+        "self-rag.pdf:p2",
+        "corrective-rag.pdf:p10",
+        "rag-knowledge-intensive-nlp.pdf:p8",
+        "corrective-rag.pdf:p10"
+      ],
+      "top_score": 0.19354261297660702,
+      "quote_found": false,
+      "relevant": [
+        "rag-knowledge-intensive-nlp.pdf:p4"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 0.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": false
+      }
+    },
+    {
+      "id": "gq-010",
+      "unanswerable": false,
+      "retrieved": [
+        "rag-knowledge-intensive-nlp.pdf:p1",
+        "rag-knowledge-intensive-nlp.pdf:p1",
+        "corrective-rag.pdf:p3",
+        "rag-knowledge-intensive-nlp.pdf:p9",
+        "rag-knowledge-intensive-nlp.pdf:p9",
+        "corrective-rag.pdf:p1",
+        "corrective-rag.pdf:p6"
+      ],
+      "top_score": 0.3472525385052129,
+      "quote_found": false,
+      "relevant": [
+        "rag-knowledge-intensive-nlp.pdf:p7",
+        "rag-knowledge-intensive-nlp.pdf:p8"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 0.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": false
+      }
+    },
+    {
+      "id": "gq-011",
+      "unanswerable": false,
+      "retrieved": [
+        "self-rag.pdf:p1",
+        "self-rag.pdf:p1",
+        "self-rag.pdf:p10",
+        "self-rag.pdf:p1",
+        "self-rag.pdf:p5",
+        "self-rag.pdf:p17",
+        "self-rag.pdf:p21",
+        "self-rag.pdf:p2",
+        "self-rag.pdf:p2",
+        "self-rag.pdf:p4"
+      ],
+      "top_score": 0.6568508163910929,
+      "quote_found": null,
+      "relevant": [
+        "self-rag.pdf:p4"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-012",
+      "unanswerable": false,
+      "retrieved": [
+        "self-rag.pdf:p2",
+        "self-rag.pdf:p9",
+        "self-rag.pdf:p3",
+        "self-rag.pdf:p10",
+        "corrective-rag.pdf:p3",
+        "self-rag.pdf:p6",
+        "self-rag.pdf:p5",
+        "lost-in-the-middle.pdf:p2"
+      ],
+      "top_score": 0.7143966933788981,
+      "quote_found": true,
+      "relevant": [
+        "self-rag.pdf:p6"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-013",
+      "unanswerable": false,
+      "retrieved": [
+        "self-rag.pdf:p4",
+        "self-rag.pdf:p5",
+        "self-rag.pdf:p17",
+        "self-rag.pdf:p17",
+        "lost-in-the-middle.pdf:p5",
+        "self-rag.pdf:p17",
+        "lost-in-the-middle.pdf:p15"
+      ],
+      "top_score": 0.21615139066781877,
+      "quote_found": false,
+      "relevant": [
+        "self-rag.pdf:p4",
+        "self-rag.pdf:p5"
+      ],
+      "recall": {
+        "1": 0.5,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-014",
+      "unanswerable": false,
+      "retrieved": [
+        "dense-passage-retrieval.pdf:p6",
+        "dense-passage-retrieval.pdf:p4",
+        "dense-passage-retrieval.pdf:p8",
+        "dense-passage-retrieval.pdf:p2",
+        "dense-passage-retrieval.pdf:p5",
+        "dense-passage-retrieval.pdf:p1",
+        "dense-passage-retrieval.pdf:p6",
+        "dense-passage-retrieval.pdf:p8"
+      ],
+      "top_score": 0.2438474792372468,
+      "quote_found": false,
+      "relevant": [
+        "self-rag.pdf:p9"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 0.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": false
+      }
+    },
+    {
+      "id": "gq-015",
+      "unanswerable": false,
+      "retrieved": [
+        "corrective-rag.pdf:p3",
+        "corrective-rag.pdf:p3",
+        "corrective-rag.pdf:p8",
+        "corrective-rag.pdf:p5",
+        "corrective-rag.pdf:p4",
+        "corrective-rag.pdf:p15",
+        "lost-in-the-middle.pdf:p10",
+        "self-rag.pdf:p6",
+        "corrective-rag.pdf:p10"
+      ],
+      "top_score": 0.9779943461076703,
+      "quote_found": true,
+      "relevant": [
+        "corrective-rag.pdf:p3"
+      ],
+      "recall": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-016",
+      "unanswerable": false,
+      "retrieved": [
+        "corrective-rag.pdf:p5",
+        "corrective-rag.pdf:p5",
+        "corrective-rag.pdf:p3",
+        "corrective-rag.pdf:p3",
+        "corrective-rag.pdf:p2",
+        "corrective-rag.pdf:p9",
+        "corrective-rag.pdf:p5",
+        "corrective-rag.pdf:p8"
+      ],
+      "top_score": 0.7775721541530215,
+      "quote_found": true,
+      "relevant": [
+        "corrective-rag.pdf:p5"
+      ],
+      "recall": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-017",
+      "unanswerable": false,
+      "retrieved": [],
+      "top_score": 0.003216634130969333,
+      "quote_found": false,
+      "relevant": [
+        "corrective-rag.pdf:p4"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 0.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": false
+      }
+    },
+    {
+      "id": "gq-018",
+      "unanswerable": false,
+      "retrieved": [],
+      "top_score": 0.005889463091463516,
+      "quote_found": false,
+      "relevant": [
+        "corrective-rag.pdf:p5",
+        "corrective-rag.pdf:p6"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 0.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": false
+      }
+    },
+    {
+      "id": "gq-019",
+      "unanswerable": false,
+      "retrieved": [
+        "hnsw.pdf:p4",
+        "hnsw.pdf:p4",
+        "hnsw.pdf:p5"
+      ],
+      "top_score": 0.02193601475030319,
+      "quote_found": false,
+      "relevant": [
+        "hnsw.pdf:p5"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": false,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-020",
+      "unanswerable": false,
+      "retrieved": [
+        "hnsw.pdf:p5",
+        "hnsw.pdf:p3",
+        "hnsw.pdf:p4",
+        "hnsw.pdf:p5",
+        "hnsw.pdf:p7",
+        "hnsw.pdf:p5",
+        "attention-is-all-you-need.pdf:p6"
+      ],
+      "top_score": 0.6558272477970292,
+      "quote_found": false,
+      "relevant": [
+        "hnsw.pdf:p6"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 0.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": false
+      }
+    },
+    {
+      "id": "gq-021",
+      "unanswerable": false,
+      "retrieved": [
+        "hnsw.pdf:p8",
+        "hnsw.pdf:p5",
+        "hnsw.pdf:p8",
+        "hnsw.pdf:p3"
+      ],
+      "top_score": 0.03696471110338685,
+      "quote_found": false,
+      "relevant": [
+        "hnsw.pdf:p6"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 0.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": false
+      }
+    },
+    {
+      "id": "gq-022",
+      "unanswerable": false,
+      "retrieved": [
+        "hnsw.pdf:p4",
+        "hnsw.pdf:p5",
+        "hnsw.pdf:p5",
+        "hnsw.pdf:p4",
+        "hnsw.pdf:p2",
+        "hnsw.pdf:p3",
+        "hnsw.pdf:p2",
+        "hnsw.pdf:p2",
+        "hnsw.pdf:p5",
+        "hnsw.pdf:p4"
+      ],
+      "top_score": 0.9724583202041274,
+      "quote_found": true,
+      "relevant": [
+        "hnsw.pdf:p3",
+        "hnsw.pdf:p6"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 0.5
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-023",
+      "unanswerable": false,
+      "retrieved": [
+        "self-rag.pdf:p27"
+      ],
+      "top_score": 0.029895348845532053,
+      "quote_found": false,
+      "relevant": [
+        "lost-in-the-middle.pdf:p5"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 0.0,
+        "10": 0.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": false,
+        "10": false
+      }
+    },
+    {
+      "id": "gq-024",
+      "unanswerable": false,
+      "retrieved": [
+        "lost-in-the-middle.pdf:p8",
+        "lost-in-the-middle.pdf:p2",
+        "lost-in-the-middle.pdf:p4",
+        "lost-in-the-middle.pdf:p7",
+        "lost-in-the-middle.pdf:p5",
+        "lost-in-the-middle.pdf:p8",
+        "lost-in-the-middle.pdf:p1",
+        "lost-in-the-middle.pdf:p15"
+      ],
+      "top_score": 0.8272571614987376,
+      "quote_found": false,
+      "relevant": [
+        "lost-in-the-middle.pdf:p8"
+      ],
+      "recall": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": true,
+        "3": true,
+        "5": true,
+        "10": true
+      }
+    },
+    {
+      "id": "gq-025",
+      "unanswerable": true,
+      "retrieved": [],
+      "top_score": 0.0057244057748784645,
+      "quote_found": null
+    },
+    {
+      "id": "gq-026",
+      "unanswerable": true,
+      "retrieved": [
+        "lost-in-the-middle.pdf:p5",
+        "self-rag.pdf:p1"
+      ],
+      "top_score": 0.2528586538039633,
+      "quote_found": null
+    },
+    {
+      "id": "gq-028",
+      "unanswerable": true,
+      "retrieved": [
+        "dense-passage-retrieval.pdf:p7",
+        "hnsw.pdf:p10",
+        "hnsw.pdf:p8"
+      ],
+      "top_score": 0.14758581911389682,
+      "quote_found": null
+    },
+    {
+      "id": "gq-029",
+      "unanswerable": true,
+      "retrieved": [
+        "dense-passage-retrieval.pdf:p2",
+        "rag-knowledge-intensive-nlp.pdf:p8",
+        "dense-passage-retrieval.pdf:p2",
+        "dense-passage-retrieval.pdf:p5",
+        "dense-passage-retrieval.pdf:p2",
+        "dense-passage-retrieval.pdf:p6",
+        "lost-in-the-middle.pdf:p10",
+        "dense-passage-retrieval.pdf:p7"
+      ],
+      "top_score": 0.3308857108652913,
+      "quote_found": null
+    },
+    {
+      "id": "gq-030",
+      "unanswerable": true,
+      "retrieved": [
+        "corrective-rag.pdf:p1",
+        "corrective-rag.pdf:p10",
+        "corrective-rag.pdf:p9",
+        "corrective-rag.pdf:p4",
+        "corrective-rag.pdf:p4",
+        "corrective-rag.pdf:p8",
+        "lost-in-the-middle.pdf:p3",
+        "lost-in-the-middle.pdf:p9"
+      ],
+      "top_score": 0.5753881056803647,
+      "quote_found": null
+    },
+    {
+      "id": "gq-032",
+      "unanswerable": true,
+      "retrieved": [],
+      "top_score": 0.0044676800929923976,
+      "quote_found": null
+    },
+    {
+      "id": "gq-031",
+      "unanswerable": false,
+      "retrieved": [
+        "dense-passage-retrieval.pdf:p7",
+        "dense-passage-retrieval.pdf:p7",
+        "hnsw.pdf:p10",
+        "hnsw.pdf:p8",
+        "hnsw.pdf:p8",
+        "hnsw.pdf:p11",
+        "hnsw.pdf:p6"
+      ],
+      "top_score": 0.6352666640688617,
+      "quote_found": true,
+      "relevant": [
+        "hnsw.pdf:p8"
+      ],
+      "recall": {
+        "1": 0.0,
+        "3": 0.0,
+        "5": 1.0,
+        "10": 1.0
+      },
+      "hit": {
+        "1": false,
+        "3": false,
+        "5": true,
+        "10": true
+      }
+    }
+  ],
+  "ordering": [
+    {
+      "k": 1,
+      "recall_at_k": 0.4,
+      "hit_at_k": 0.44,
+      "mrr": 0.5106666666666667
+    },
+    {
+      "k": 3,
+      "recall_at_k": 0.5,
+      "hit_at_k": 0.52,
+      "mrr": 0.5106666666666667
+    },
+    {
+      "k": 5,
+      "recall_at_k": 0.58,
+      "hit_at_k": 0.6,
+      "mrr": 0.5106666666666667
+    },
+    {
+      "k": 10,
+      "recall_at_k": 0.68,
+      "hit_at_k": 0.72,
+      "mrr": 0.5106666666666667
+    }
+  ],
+  "rerank_floor": {
+    "floor": 0.01,
+    "answerable_emptied": 2,
+    "unanswerable_emptied": 2
+  }
+}

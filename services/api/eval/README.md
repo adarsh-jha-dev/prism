@@ -189,6 +189,7 @@ invalidates every earlier run.
 | `runs/baseline-2026-09-14-hybrid.json` | 2026-09-14 | hybrid | 0.68 | 0.461 | Hybrid FTS + vector, RRF k=60. **Identical to the vector baseline at every k** — see below. |
 | `runs/baseline-2026-09-16-rerank.json` | 2026-09-16 | rerank | 0.36 | 0.360 | Rerank over 10 fused candidates, floor 0.44. Recall **after** the floor; the ordering alone reaches 0.68 recall@10 and 0.511 MRR. See below — the floor, not the cross-encoder, is what moves this number. |
 | `runs/baseline-2026-09-26-answers.json` | 2026-09-26 | rerank + the whole graph (schema 4) | 0.36 | 0.360 | The first baseline with answers in it. Retrieval reproduces 2026-09-16 exactly; what is new is the answer block — **6/6 correct refusal, 20/24 false refusal**. See below. |
+| `runs/baseline-2026-09-26-floor.json` | 2026-09-26 | rerank | 0.66 | 0.471 | Floor re-fitted to 0.01 (ADR 0024). Retrieval only — the answer baseline above is still at 0.44. See below. |
 
 Recall is not comparable across retrievers, so schema 2 records which one ran. A
 schema-1 report predates the hybrid retriever and is vector-only by construction.
@@ -403,6 +404,38 @@ would make the number a choice rather than a result:
   `max_tokens` cuts it mid-JSON. That is what cost `gq-024`, at roughly one in
   sixty grader calls. Raising `_GRADER_MAX_TOKENS` does not fix it — the largest
   output this run recorded was 84 tokens against a 400 ceiling.
+
+### The floor, re-fitted at a pool of 10
+
+The earlier sweep scored 30 candidates; the graph scores 10. Re-swept at the
+graph's own constants, one scoring pass with the floors applied after it (the
+0.44 row reproduces `baseline-2026-09-16-rerank.json` exactly):
+
+| floor | recall@10 | MRR | answerable emptied | unanswerable emptied | gutted | passages to the grader |
+|---|---|---|---|---|---|---|
+| 0.00 | 0.68 | 0.511 | 0/25 | 0/6 | 0/18 | 10.0 |
+| **0.01** | **0.66** | **0.471** | **2/25** | **2/6** | **1/18** | **6.5** |
+| 0.02 | 0.58 | 0.453 | 2/25 | 2/6 | 3/18 | 5.5 |
+| 0.05 | 0.54 | 0.447 | 5/25 | 2/6 | 4/18 | 4.3 |
+| 0.20 | 0.54 | 0.447 | 6/25 | 3/6 | 4/18 | 2.7 |
+| 0.30 | 0.50 | 0.407 | 8/25 | 4/6 | 5/18 | 2.2 |
+| 0.44 | 0.36 | 0.360 | 9/25 | 5/6 | 9/18 | 1.4 |
+| 0.60 | 0.32 | 0.320 | 10/25 | 6/6 | 10/18 | 0.9 |
+
+"Passages to the grader" is the mean kept per answerable question, at 0.63s
+each (ADR 0020).
+
+**What a floor buys now that `grade_docs` follows it** is the 0.00 → 0.01 step:
+3.5 fewer passages graded per answerable pass, 6.5 fewer per unanswerable one,
+and 2 of 6 unanswerable questions refused with no LLM call — for 0.02 recall@10
+and one gold chunk the cross-encoder scored 0.006. Every step above 0.01 costs
+recall and refuses nothing more until 0.15. `rerank_score_floor` is **0.01**
+(ADR 0024), pinned as `runs/baseline-2026-09-26-floor.json`.
+
+What it gives up is refusal work. At 0.44 the floor emptied 5 of 6 unanswerable
+questions, and those were 5 of the answer baseline's 6 correct refusals. At 0.01
+four of them reach `grade_docs` and `verify_grounding`, so the next answer run
+has to show correct refusal holding rather than assume it.
 
 `make eval` writes `runs/latest.json`, which stays ignored. Pinning a baseline
 means copying one to `runs/baseline-<date>.json` and committing it — the report

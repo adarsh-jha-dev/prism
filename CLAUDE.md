@@ -96,7 +96,7 @@ timeout, and a `billing_unit` on cost records — tokens cannot express GPU-time
 All live in `Settings`, never hardcoded at a call site.
 
 tau **0.58** · max attempts per loop **3** (total, not 3 on top of one) · rerank
-floor **0.44** · cost budget **$0.0050/query** · latency budget **6s/query**.
+floor **0.01** · cost budget **$0.0050/query** · latency budget **6s/query**.
 
 When no provider meets both budgets, that is a refusal — never a silent
 overspend.
