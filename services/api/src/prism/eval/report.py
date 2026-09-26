@@ -9,6 +9,7 @@ the numbers do.
 
 import json
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Any
 
 from prism.config import Settings
@@ -298,11 +299,13 @@ def _answer_lines(block: AnswerBlock) -> list[str]:
         f"  correct refusal   {_rate(refusal.correct_refusal_rate)}   "
         f"{refusal.refused_correctly} of {refusal.unanswerable} unanswerable refused"
     )
+    for reason, count in sorted(refusal.correct_reasons.items()):
+        lines.append(f"      {reason:<24} {count}")
     lines.append(
         f"  false refusal     {_rate(refusal.false_refusal_rate)}   "
         f"{refusal.refused_falsely} of {refusal.answerable} answerable refused"
     )
-    for reason, count in sorted(refusal.reasons.items()):
+    for reason, count in sorted(refusal.false_reasons.items()):
         lines.append(f"      {reason:<24} {count}")
     lines.append("")
 
@@ -444,6 +447,11 @@ def render_json(report: Report) -> str:
     return json.dumps(payload, indent=2, sort_keys=False)
 
 
+def _usd(value: Decimal | None) -> str | None:
+    """Plain decimal, never Decimal's 0E-8: a pinned artifact is read by people."""
+    return None if value is None else format(value, "f")
+
+
 def _answer_payload(block: AnswerBlock) -> dict[str, Any]:
     refusal, grounding = block.refusal, block.groundedness
     citations, budget, attempts = block.citations, block.budget, block.attempts
@@ -473,7 +481,8 @@ def _answer_payload(block: AnswerBlock) -> dict[str, Any]:
             "answerable": refusal.answerable,
             "refused_falsely": refusal.refused_falsely,
             "false_refusal_rate": refusal.false_refusal_rate,
-            "reasons": dict(sorted(refusal.reasons.items())),
+            "correct_reasons": dict(sorted(refusal.correct_reasons.items())),
+            "false_reasons": dict(sorted(refusal.false_reasons.items())),
         },
         "groundedness": {
             "tau": grounding.tau,
@@ -498,9 +507,9 @@ def _answer_payload(block: AnswerBlock) -> dict[str, Any]:
         },
         "budget": {
             "unpriced": budget.unpriced,
-            "mean_cost_usd": None if budget.mean_cost_usd is None else str(budget.mean_cost_usd),
-            "max_cost_usd": None if budget.max_cost_usd is None else str(budget.max_cost_usd),
-            "cost_budget_usd": str(budget.cost_budget_usd),
+            "mean_cost_usd": _usd(budget.mean_cost_usd),
+            "max_cost_usd": _usd(budget.max_cost_usd),
+            "cost_budget_usd": _usd(budget.cost_budget_usd),
             "over_cost_budget": budget.over_cost_budget,
             "mean_input_tokens": budget.mean_input_tokens,
             "mean_output_tokens": budget.mean_output_tokens,
@@ -524,7 +533,7 @@ def _answer_payload(block: AnswerBlock) -> dict[str, Any]:
                 "unresolved_citations": r.unresolved_citations,
                 "fabricated_citations": r.fabricated_citations,
                 "latency_ms": r.latency_ms,
-                "cost_usd": None if r.cost_usd is None else str(r.cost_usd),
+                "cost_usd": _usd(r.cost_usd),
                 "input_tokens": r.input_tokens,
                 "output_tokens": r.output_tokens,
                 "nodes": r.nodes,

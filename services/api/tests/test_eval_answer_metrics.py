@@ -91,10 +91,12 @@ def test_correct_and_false_refusal_are_scored_over_their_own_class() -> None:
     assert summary.correct_refusal_rate == pytest.approx(2 / 3)
     assert (summary.answerable, summary.refused_falsely) == (3, 1)
     assert summary.false_refusal_rate == pytest.approx(1 / 3)
-    assert dict(summary.reasons) == {
+    # Kept apart: a single breakdown reads as whichever rate it sits under.
+    assert dict(summary.correct_reasons) == {
         "no_relevant_evidence": 1,
         "insufficient_evidence": 1,
     }
+    assert dict(summary.false_reasons) == {"no_relevant_evidence": 1}
 
 
 def test_a_class_with_no_questions_has_no_rate_rather_than_zero() -> None:

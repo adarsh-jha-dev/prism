@@ -249,8 +249,11 @@ class RefusalSummary:
     refused_correctly: int
     answerable: int
     refused_falsely: int
-    reasons: Mapping[str, int]
-    """Refusal reason counts over the unanswerable questions."""
+    correct_reasons: Mapping[str, int]
+    """Why the unanswerable questions were refused."""
+    false_reasons: Mapping[str, int]
+    """Why the answerable ones were. Kept apart: one rate is the goal and the
+    other is its cost, and a single breakdown reads as whichever it sits under."""
 
     @property
     def correct_refusal_rate(self) -> float | None:
@@ -269,7 +272,12 @@ def summarize_refusals(results: Sequence[AnswerResult]) -> RefusalSummary:
         refused_correctly=sum(1 for r in unanswerable if r.refused),
         answerable=len(answerable),
         refused_falsely=sum(1 for r in answerable if r.refused),
-        reasons=Counter(r.refusal_reason for r in unanswerable if r.refusal_reason),
+        correct_reasons=Counter(
+            r.refusal_reason for r in unanswerable if r.refused and r.refusal_reason
+        ),
+        false_reasons=Counter(
+            r.refusal_reason for r in answerable if r.refused and r.refusal_reason
+        ),
     )
 
 
